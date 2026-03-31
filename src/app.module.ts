@@ -7,6 +7,17 @@ import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 import { configuration, getConfiguration } from '@config/configuration';
 import { configValidationSchema } from '@config/validation.schema';
 
+// Explicit entity imports (required for webpack bundling)
+import { UserEntity } from '@modules/users/entities/user.entity';
+import { OrganizationEntity } from '@modules/organizations/entities/organization.entity';
+import { VehicleEntity } from '@modules/vehicles/entities/vehicle.entity';
+import { VehicleGroupEntity } from '@modules/vehicles/entities/vehicle-group.entity';
+import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.entity';
+import { GeofenceEntity } from '@modules/geofences/entities/geofence.entity';
+import { VehicleGeofenceEntity } from '@modules/geofences/entities/vehicle-geofence.entity';
+import { AlertEntity } from '@modules/alerts/entities/alert.entity';
+import { AlertRuleEntity } from '@modules/alerts/entities/alert-rule.entity';
+
 import { AuthModule } from '@modules/auth/auth.module';
 import { UsersModule } from '@modules/users/users.module';
 import { OrganizationsModule } from '@modules/organizations/organizations.module';
@@ -18,6 +29,18 @@ import { ReportsModule } from '@modules/reports/reports.module';
 import { GpsProvidersModule } from '@modules/gps-providers/gps-providers.module';
 import { QueueModule } from '@modules/queue/queue.module';
 import { SuperAdminModule } from '@modules/super-admin/super-admin.module';
+
+const entities = [
+  UserEntity,
+  OrganizationEntity,
+  VehicleEntity,
+  VehicleGroupEntity,
+  GpsHistoryEntity,
+  GeofenceEntity,
+  VehicleGeofenceEntity,
+  AlertEntity,
+  AlertRuleEntity,
+];
 
 @Module({
   imports: [
@@ -39,7 +62,7 @@ import { SuperAdminModule } from '@modules/super-admin/super-admin.module';
         return {
           type: 'postgres' as const,
           url: config.DATABASE_URL,
-          entities: [__dirname + '/**/*.entity{.ts,.js}'],
+          entities,
           namingStrategy: new SnakeNamingStrategy(),
           synchronize: false,
           logging: config.isDevelopment,
