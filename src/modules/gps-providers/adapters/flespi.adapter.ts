@@ -133,6 +133,8 @@ export class FlespiAdapter implements IGpsProvider, OnModuleInit {
    */
   private normalizeFlespiData(device: any): NormalizedGPSData | null {
     const telemetry = device.telemetry?.position?.value || device.telemetry || device;
+    // Flespi puts timestamp at device.telemetry.position.ts (Unix seconds)
+    const positionTs = device.telemetry?.position?.ts;
 
     const lat = telemetry.latitude || telemetry.lat;
     const lng = telemetry.longitude || telemetry.lng || telemetry.lon;
@@ -146,9 +148,11 @@ export class FlespiAdapter implements IGpsProvider, OnModuleInit {
       speed: parseFloat(telemetry.speed || 0),
       heading: parseFloat(telemetry.direction || telemetry.heading || telemetry.course || 0),
       altitude: telemetry.altitude ? parseFloat(telemetry.altitude) : undefined,
-      timestamp: telemetry.timestamp
-        ? new Date(telemetry.timestamp * 1000)
-        : new Date(),
+      timestamp: positionTs
+        ? new Date(positionTs * 1000)
+        : telemetry.timestamp
+          ? new Date(telemetry.timestamp * 1000)
+          : new Date(),
       provider: 'FLESPI' as any,
       raw: device,
     };

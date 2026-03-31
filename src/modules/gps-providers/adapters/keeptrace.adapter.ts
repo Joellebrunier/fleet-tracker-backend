@@ -114,7 +114,7 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
       }
 
       const data = (await response.json()) as any;
-      const vehicles = Array.isArray(data) ? data : (data.vehicles || data.items || data.results || []);
+      const vehicles = Array.isArray(data) ? data : (data.Positions || data.positions || data.vehicles || data.items || data.results || []);
       let totalProcessed = 0;
 
       for (const vehicle of vehicles) {
@@ -189,13 +189,13 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
       vehicleId: String(vehicle.VehicleId || vehicle.Id || vehicle.id || vehicle.trackerId || vehicle.imei),
       lat: parseFloat(lat),
       lng: parseFloat(lng),
-      speed: parseFloat(vehicle.Speed || vehicle.speed || vehicle.lastPosition?.speed || 0),
-      heading: parseFloat(vehicle.Direction || vehicle.heading || vehicle.direction || vehicle.lastPosition?.heading || 0),
+      speed: parseFloat(vehicle.GpsSpeed || vehicle.Speed || vehicle.speed || vehicle.lastPosition?.speed || 0),
+      heading: parseFloat(vehicle.Heading || vehicle.Direction || vehicle.heading || vehicle.direction || 0),
       altitude: vehicle.Altitude || vehicle.altitude ? parseFloat(vehicle.Altitude || vehicle.altitude) : undefined,
-      timestamp: vehicle.Date
-        ? new Date(vehicle.Date)
-        : vehicle.lastPositionDate
-          ? new Date(vehicle.lastPositionDate)
+      timestamp: vehicle.TimeStamp
+        ? new Date(vehicle.TimeStamp)
+        : vehicle.Date
+          ? new Date(vehicle.Date)
           : new Date(),
       provider: 'KEEPTRACE' as any,
       raw: vehicle,

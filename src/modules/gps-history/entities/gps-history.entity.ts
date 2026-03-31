@@ -34,7 +34,7 @@ export class GpsHistoryEntity {
   @Column({ type: 'float', nullable: true })
   accuracy?: number;
 
-  @Column({ type: 'enum', enum: Provider })
+  @Column({ type: 'varchar' })
   provider: Provider;
 
   @Column({ type: 'jsonb', nullable: true })
