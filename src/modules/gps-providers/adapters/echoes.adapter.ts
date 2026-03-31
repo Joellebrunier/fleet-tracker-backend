@@ -1,17 +1,18 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { IGpsProvider } from '../interfaces/gps-provider.interface';
 import { DataNormalizerService } from '../normalizer/data-normalizer.service';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
 
 /**
- * Echoes GPS Adapter
+ * Echoes GPS Adapter (Neutral Server API)
  *
- * API Documentation: https://api.neutral-server.com/
+ * Swagger: https://api.neutral-server.com/
  * Auth: Header "Authorization: Apikey <key>" or "Authorization: Privacykey <key>"
- * Vehicles endpoint: GET /api/assets (paginated, limit=100, offset=0)
- * Single vehicle: GET /api/assets/{uid}
+ * Vehicles: GET /api/accounts/{accountId}/assets?limit=100&offset=0
+ * Single vehicle: GET /api/accounts/{accountId}/assets/{assetId}
+ * Single by VIN: GET /api/accounts/{accountId}/assets/vins/{vin}
  */
 @Injectable()
 export class EchoesAdapter implements IGpsProvider, OnModuleInit {
@@ -35,17 +36,17 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
   }
 
   async onModuleInit() {
-    if (this.apiKey) {
+    if (this.apiKey && this.accountId) {
       await this.connect();
     } else {
-      this.logger.warn('Echoes API key not configured, adapter disabled');
+      this.logger.warn('Echoes API key or account ID not configured, adapter disabled');
     }
   }
 
   async connect(): Promise<void> {
     try {
       // Test connection by fetching account info
-      const response = await fetch(`${this.apiUrl}/api/accounts/me`, {
+      const response = await fetch(`${this.apiUrl}/api/accounts/${this.accountId}`, {
         headers: {
           'Authorization': this.apiKey,
           'Accept': 'application/json',
@@ -56,7 +57,8 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
         this.connected = true;
         this.logger.log(`Echoes adapter connected (Account ID: ${this.accountId})`);
       } else {
-        this.logger.error(`Echoes connection failed: ${response.status} ${response.statusText}`);
+        const body = await response.text();
+        this.logger.error(`Echoes connection failed: ${response.status} ${response.statusText} - ${body}`);
       }
     } catch (error) {
       this.logger.error('Echoes connection error:', error);
@@ -75,8 +77,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
   /**
    * Poll Echoes API every 2 minutes
    * Fetches all vehicles with their latest positions
-   * API: GET /api/assets?limit=100&offset=0
-   * Pagination: iterate with offset until all vehicles are fetched
+   * API: GET /api/accounts/{accountId}/assets?limit=100&offset=0
    */
   @Cron('*/2 * * * *')
   async pollEchoesApi(): Promise<void> {
@@ -90,7 +91,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
 
       while (hasMore) {
         const response = await fetch(
-          `${this.apiUrl}/api/assets?limit=${limit}&offset=${offset}`,
+          `${this.apiUrl}/api/accounts/${this.accountId}/assets?limit=${limit}&offset=${offset}`,
           {
             headers: {
               'Authorization': this.apiKey,
@@ -142,7 +143,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
    * Fetch a single vehicle's latest data by UID
    */
   async getVehicleByUid(uid: string): Promise<any> {
-    const response = await fetch(`${this.apiUrl}/api/assets/${uid}`, {
+    const response = await fetch(`${this.apiUrl}/api/accounts/${this.accountId}/assets/${uid}`, {
       headers: {
         'Authorization': this.apiKey,
         'Accept': 'application/json',
@@ -160,7 +161,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
    * Fetch a single vehicle's latest data by VIN
    */
   async getVehicleByVin(vin: string): Promise<any> {
-    const response = await fetch(`${this.apiUrl}/api/assets/vin/${vin}`, {
+    const response = await fetch(`${this.apiUrl}/api/accounts/${this.accountId}/assets/vins/${vin}`, {
       headers: {
         'Authorization': this.apiKey,
         'Accept': 'application/json',
@@ -176,8 +177,6 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
 
   /**
    * Create a vehicle on Echoes platform
-   * Required: name, typeId (3304 legacy)
-   * Optional: fleetId, deviceTypeId, vin, brandName
    */
   async createVehicle(params: {
     name: string;
@@ -196,7 +195,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
     if (params.fleetId) body.fleetId = params.fleetId;
     if (params.deviceTypeId) body.deviceTypeId = params.deviceTypeId;
 
-    const response = await fetch(`${this.apiUrl}/api/assets`, {
+    const response = await fetch(`${this.apiUrl}/api/accounts/${this.accountId}/assets`, {
       method: 'POST',
       headers: {
         'Authorization': this.apiKey,
@@ -218,7 +217,6 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
    * Normalize Echoes vehicle data to standard GPS format
    */
   private normalizeEchoesData(vehicle: any): NormalizedGPSData | null {
-    // Echoes returns vehicle with lastPosition or embedded GPS data
     const position = vehicle.lastPosition || vehicle.position || vehicle;
 
     const lat = position.latitude || position.lat;
@@ -234,7 +232,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
       heading: parseFloat(position.heading || position.course || 0),
       altitude: position.altitude ? parseFloat(position.altitude) : undefined,
       timestamp: position.timestamp ? new Date(position.timestamp) : new Date(),
-      provider: 'echoes' as any,
+      provider: 'ECHOES' as any,
       raw: vehicle,
     };
   }

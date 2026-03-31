@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { IGpsProvider } from '../interfaces/gps-provider.interface';
 import { DataNormalizerService } from '../normalizer/data-normalizer.service';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
@@ -9,8 +9,15 @@ import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
  * KeepTrace GPS Adapter
  *
  * API Documentation: https://customerapi.live.keeptrace.fr/Help
- * Auth: API Key passed in header or query parameter
- * Key: 3952311b-f982-46c4-a1a3-8ae691b855cc
+ * Auth: Header "Authorization-Key: <apiKey>"
+ *
+ * Endpoints:
+ *   GET  api/Vehicle/GetVehicles         - List equipped vehicles
+ *   POST api/RealTime/GetLastPositions   - Last positions for all vehicles
+ *   POST api/RealTime/GetLastPosition    - Last position for one vehicle
+ *   POST api/RealTime/GetAllPositions    - Positions since a date/ID
+ *   POST api/History/GetJourneys         - Journey history for a vehicle
+ *   POST api/History/GetJourneysLocations - GPS locations during journeys
  */
 @Injectable()
 export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
@@ -41,19 +48,19 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
 
   async connect(): Promise<void> {
     try {
-      // Test connection by fetching vehicles
-      const response = await fetch(`${this.apiUrl}/api/vehicles?apiKey=${this.apiKey}`, {
-        headers: {
-          'Accept': 'application/json',
-          'X-Api-Key': this.apiKey,
-        },
+      // Test connection by fetching vehicle list
+      const response = await fetch(`${this.apiUrl}/api/Vehicle/GetVehicles`, {
+        headers: this.getAuthHeaders(),
       });
 
       if (response.ok) {
+        const data = await response.json();
         this.connected = true;
-        this.logger.log('KeepTrace adapter connected');
+        const count = Array.isArray(data) ? data.length : 0;
+        this.logger.log(`KeepTrace adapter connected (${count} vehicles found)`);
       } else {
-        this.logger.error(`KeepTrace connection failed: ${response.status} ${response.statusText}`);
+        const body = await response.text();
+        this.logger.error(`KeepTrace connection failed: ${response.status} ${response.statusText} - ${body}`);
       }
     } catch (error) {
       this.logger.error('KeepTrace connection error:', error);
@@ -70,39 +77,31 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
   }
 
   /**
-   * Build request URL with API key
-   */
-  private buildUrl(path: string, params?: Record<string, string>): string {
-    const url = new URL(`${this.apiUrl}${path}`);
-    url.searchParams.set('apiKey', this.apiKey);
-    if (params) {
-      for (const [key, value] of Object.entries(params)) {
-        url.searchParams.set(key, value);
-      }
-    }
-    return url.toString();
-  }
-
-  /**
    * Build auth headers for KeepTrace API
+   * Uses "Authorization-Key" header as per official docs
    */
   private getAuthHeaders(): Record<string, string> {
     return {
       'Accept': 'application/json',
-      'X-Api-Key': this.apiKey,
+      'Content-Type': 'application/json',
+      'Authorization-Key': this.apiKey,
     };
   }
 
   /**
    * Poll KeepTrace API every 2 minutes
+   * Uses POST api/RealTime/GetLastPositions for real-time positions
    */
   @Cron('*/2 * * * *')
   async pollKeepTraceApi(): Promise<void> {
     if (!this.connected || !this.dataCallback) return;
 
     try {
-      const response = await fetch(this.buildUrl('/api/vehicles'), {
+      // Use GetLastPositions for all vehicle positions
+      const response = await fetch(`${this.apiUrl}/api/RealTime/GetLastPositions`, {
+        method: 'POST',
         headers: this.getAuthHeaders(),
+        body: JSON.stringify({}),
       });
 
       if (!response.ok) {
@@ -126,7 +125,7 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
             totalProcessed++;
           }
         } catch (err) {
-          this.logger.warn(`Failed to normalize KeepTrace vehicle ${vehicle.id}: ${err}`);
+          this.logger.warn(`Failed to normalize KeepTrace vehicle ${vehicle.id || vehicle.VehicleId}: ${err}`);
         }
       }
 
@@ -142,8 +141,10 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
    * Fetch a single vehicle's latest position
    */
   async getVehiclePosition(vehicleId: string): Promise<any> {
-    const response = await fetch(this.buildUrl(`/api/vehicles/${vehicleId}`), {
+    const response = await fetch(`${this.apiUrl}/api/RealTime/GetLastPosition`, {
+      method: 'POST',
       headers: this.getAuthHeaders(),
+      body: JSON.stringify({ VehicleId: vehicleId }),
     });
 
     if (!response.ok) {
@@ -154,16 +155,18 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
   }
 
   /**
-   * Fetch vehicle history/trips
+   * Fetch vehicle journey history
    */
   async getVehicleHistory(vehicleId: string, startDate: string, endDate: string): Promise<any> {
-    const response = await fetch(
-      this.buildUrl(`/api/vehicles/${vehicleId}/trips`, {
-        startDate,
-        endDate,
+    const response = await fetch(`${this.apiUrl}/api/History/GetJourneys`, {
+      method: 'POST',
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({
+        VehicleId: vehicleId,
+        StartDate: startDate,
+        EndDate: endDate,
       }),
-      { headers: this.getAuthHeaders() },
-    );
+    });
 
     if (!response.ok) {
       throw new Error(`KeepTrace API error: ${response.status}`);
@@ -174,26 +177,27 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
 
   /**
    * Normalize KeepTrace vehicle data to standard GPS format
+   * KeepTrace returns fields like: VehicleId, Latitude, Longitude, Speed, Direction, Date
    */
   private normalizeKeepTraceData(vehicle: any): NormalizedGPSData | null {
-    const lat = vehicle.latitude || vehicle.lat || vehicle.lastPosition?.latitude;
-    const lng = vehicle.longitude || vehicle.lng || vehicle.lon || vehicle.lastPosition?.longitude;
+    const lat = vehicle.Latitude || vehicle.latitude || vehicle.lat || vehicle.lastPosition?.latitude;
+    const lng = vehicle.Longitude || vehicle.longitude || vehicle.lng || vehicle.lon || vehicle.lastPosition?.longitude;
 
     if (!lat || !lng) return null;
 
     return {
-      vehicleId: String(vehicle.id || vehicle.trackerId || vehicle.imei),
+      vehicleId: String(vehicle.VehicleId || vehicle.Id || vehicle.id || vehicle.trackerId || vehicle.imei),
       lat: parseFloat(lat),
       lng: parseFloat(lng),
-      speed: parseFloat(vehicle.speed || vehicle.lastPosition?.speed || 0),
-      heading: parseFloat(vehicle.heading || vehicle.direction || vehicle.lastPosition?.heading || 0),
-      altitude: vehicle.altitude ? parseFloat(vehicle.altitude) : undefined,
-      timestamp: vehicle.lastPositionDate
-        ? new Date(vehicle.lastPositionDate)
-        : vehicle.timestamp
-          ? new Date(vehicle.timestamp)
+      speed: parseFloat(vehicle.Speed || vehicle.speed || vehicle.lastPosition?.speed || 0),
+      heading: parseFloat(vehicle.Direction || vehicle.heading || vehicle.direction || vehicle.lastPosition?.heading || 0),
+      altitude: vehicle.Altitude || vehicle.altitude ? parseFloat(vehicle.Altitude || vehicle.altitude) : undefined,
+      timestamp: vehicle.Date
+        ? new Date(vehicle.Date)
+        : vehicle.lastPositionDate
+          ? new Date(vehicle.lastPositionDate)
           : new Date(),
-      provider: 'keeptrace' as any,
+      provider: 'KEEPTRACE' as any,
       raw: vehicle,
     };
   }

@@ -1,16 +1,19 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
+import { createHash } from 'crypto';
 import { IGpsProvider } from '../interfaces/gps-provider.interface';
 import { DataNormalizerService } from '../normalizer/data-normalizer.service';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
 
 /**
- * Ubiwan GPS Adapter
+ * Ubiwan GPS Adapter (now api-fleet.moncoyote.com)
  *
- * API Documentation: https://api.ubiwan.net/doc/public/index.html
- * Auth: Basic auth (username/password) or session token
- * Server: Phoenix (key: 2311-AA22)
+ * API Docs: https://api-fleet.moncoyote.com/doc/public/index.html
+ * Auth: GET /auth?u={username}&l={license}&k={serverKey}&p={md5password}
+ * Returns a token for subsequent requests.
+ *
+ * Vehicles/positions: GET /user_session?token={token}&uid_device={id}&start_time=...&end_time=...
  */
 @Injectable()
 export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
@@ -18,7 +21,7 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
   private connected = false;
   private lastUpdate: Date | null = null;
   private vehicleCount = 0;
-  private sessionToken: string | null = null;
+  private authToken: string | null = null;
   private readonly logger = new Logger(UbiwanAdapter.name);
 
   private apiUrl: string;
@@ -32,7 +35,8 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
     private configService: ConfigService,
     private normalizer: DataNormalizerService,
   ) {
-    this.apiUrl = this.configService.get<string>('UBIWAN_API_URL', 'https://api.ubiwan.net');
+    // API has been redirected from api.ubiwan.net to api-fleet.moncoyote.com
+    this.apiUrl = this.configService.get<string>('UBIWAN_API_URL', 'https://api-fleet.moncoyote.com');
     this.username = this.configService.get<string>('UBIWAN_USERNAME', '');
     this.password = this.configService.get<string>('UBIWAN_PASSWORD', '');
     this.serverName = this.configService.get<string>('UBIWAN_SERVER_NAME', 'Phoenix');
@@ -41,50 +45,67 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
   }
 
   async onModuleInit() {
-    if (this.username && this.password) {
+    if (this.username && this.password && this.license) {
       await this.connect();
     } else {
       this.logger.warn('Ubiwan credentials not configured, adapter disabled');
     }
   }
 
+  /**
+   * Authenticate with Ubiwan API
+   * GET /auth?u={username}&l={license}&k={serverKey}&p={md5password}
+   */
   async connect(): Promise<void> {
     try {
-      // Authenticate with Ubiwan API to get session token
-      const authResponse = await fetch(`${this.apiUrl}/api/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({
-          username: this.username,
-          password: this.password,
-          serverName: this.serverName,
-          serverKey: this.serverKey,
-        }),
+      const md5Password = createHash('md5').update(this.password).digest('hex');
+
+      const authUrl = `${this.apiUrl}/auth?u=${encodeURIComponent(this.username)}&l=${encodeURIComponent(this.license)}&k=${encodeURIComponent(this.serverKey)}&p=${md5Password}`;
+
+      this.logger.log(`Ubiwan: authenticating as ${this.username} on ${this.serverName}...`);
+
+      const authResponse = await fetch(authUrl, {
+        headers: { 'Accept': 'application/json' },
       });
 
       if (authResponse.ok) {
         const authData = (await authResponse.json()) as any;
-        this.sessionToken = authData.token || authData.sessionId || authData.access_token;
-        this.connected = true;
-        this.logger.log(`Ubiwan adapter connected (Server: ${this.serverName}, Account: INEHA FINANCE)`);
-      } else {
-        // Fallback: try Basic Auth
-        const basicAuth = Buffer.from(`${this.username}:${this.password}`).toString('base64');
-        const testResponse = await fetch(`${this.apiUrl}/api/vehicles`, {
-          headers: {
-            'Authorization': `Basic ${basicAuth}`,
-            'Accept': 'application/json',
-          },
-        });
+        // API returns token in the response
+        this.authToken = authData.token || authData.sessionId || authData.access_token || authData.result;
 
-        if (testResponse.ok) {
+        if (this.authToken) {
           this.connected = true;
-          this.logger.log(`Ubiwan adapter connected via Basic Auth (Server: ${this.serverName})`);
+          this.logger.log(`Ubiwan adapter connected (Server: ${this.serverName}, Account: INEHA FINANCE)`);
         } else {
-          this.logger.error(`Ubiwan auth failed: ${authResponse.status} ${authResponse.statusText}`);
+          this.logger.warn(`Ubiwan auth returned OK but no token found in response: ${JSON.stringify(authData).substring(0, 200)}`);
+          // Try using the whole response as token if it's a string
+          if (typeof authData === 'string') {
+            this.authToken = authData;
+            this.connected = true;
+            this.logger.log('Ubiwan: using raw response as token');
+          }
+        }
+      } else {
+        const body = await authResponse.text();
+        this.logger.error(`Ubiwan auth failed: ${authResponse.status} - ${body.substring(0, 300)}`);
+
+        // Fallback: try the old API URL
+        if (this.apiUrl !== 'https://api.ubiwan.net') {
+          this.logger.log('Ubiwan: trying fallback to api.ubiwan.net...');
+          const fallbackUrl = `https://api.ubiwan.net/auth?u=${encodeURIComponent(this.username)}&l=${encodeURIComponent(this.license)}&k=${encodeURIComponent(this.serverKey)}&p=${md5Password}`;
+          const fallbackResponse = await fetch(fallbackUrl, {
+            headers: { 'Accept': 'application/json' },
+            redirect: 'follow',
+          });
+          if (fallbackResponse.ok) {
+            const fallbackData = (await fallbackResponse.json()) as any;
+            this.authToken = fallbackData.token || fallbackData.result;
+            if (this.authToken) {
+              this.connected = true;
+              this.apiUrl = 'https://api.ubiwan.net';
+              this.logger.log('Ubiwan: connected via fallback URL');
+            }
+          }
         }
       }
     } catch (error) {
@@ -94,7 +115,7 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
 
   async disconnect(): Promise<void> {
     this.connected = false;
-    this.sessionToken = null;
+    this.authToken = null;
     this.logger.log('Ubiwan adapter disconnected');
   }
 
@@ -103,39 +124,22 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
   }
 
   /**
-   * Build auth headers for Ubiwan API requests
-   */
-  private getAuthHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {
-      'Accept': 'application/json',
-    };
-
-    if (this.sessionToken) {
-      headers['Authorization'] = `Bearer ${this.sessionToken}`;
-    } else {
-      const basicAuth = Buffer.from(`${this.username}:${this.password}`).toString('base64');
-      headers['Authorization'] = `Basic ${basicAuth}`;
-    }
-
-    return headers;
-  }
-
-  /**
    * Poll Ubiwan API every 2 minutes
-   * Fetches all vehicles with their latest GPS positions
+   * Uses the /site endpoint or similar to list devices, then fetches positions
    */
   @Cron('*/2 * * * *')
   async pollUbiwanApi(): Promise<void> {
-    if (!this.connected || !this.dataCallback) return;
+    if (!this.connected || !this.dataCallback || !this.authToken) return;
 
     try {
-      const response = await fetch(`${this.apiUrl}/api/vehicles`, {
-        headers: this.getAuthHeaders(),
-      });
+      // Try fetching site/device list
+      const response = await fetch(
+        `${this.apiUrl}/site?token=${encodeURIComponent(this.authToken)}`,
+        { headers: { 'Accept': 'application/json' } },
+      );
 
       if (!response.ok) {
-        // If 401, try to reconnect
-        if (response.status === 401) {
+        if (response.status === 401 || response.status === 403) {
           this.logger.warn('Ubiwan session expired, reconnecting...');
           await this.connect();
           return;
@@ -145,18 +149,23 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
       }
 
       const data = (await response.json()) as any;
-      const vehicles = Array.isArray(data) ? data : (data.vehicles || data.items || data.results || []);
+
+      // The API structure may vary - handle different response shapes
+      const devices = Array.isArray(data)
+        ? data
+        : data.devices || data.vehicles || data.items || data.result || [];
+
       let totalProcessed = 0;
 
-      for (const vehicle of vehicles) {
+      for (const device of (Array.isArray(devices) ? devices : [])) {
         try {
-          const normalized = this.normalizeUbiwanData(vehicle);
+          const normalized = this.normalizeUbiwanData(device);
           if (normalized && this.normalizer.validate(normalized)) {
             this.dataCallback(normalized);
             totalProcessed++;
           }
         } catch (err) {
-          this.logger.warn(`Failed to normalize Ubiwan vehicle ${vehicle.id || vehicle.name}: ${err}`);
+          this.logger.warn(`Failed to normalize Ubiwan device ${device.uid_device || device.id || device.name}: ${err}`);
         }
       }
 
@@ -169,27 +178,15 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
   }
 
   /**
-   * Fetch a specific vehicle's position by ID
+   * Fetch vehicle session/history between two dates
+   * GET /user_session?token={token}&uid_device={deviceId}&start_time={start}&end_time={end}
    */
-  async getVehiclePosition(vehicleId: string): Promise<any> {
-    const response = await fetch(`${this.apiUrl}/api/vehicles/${vehicleId}/position`, {
-      headers: this.getAuthHeaders(),
-    });
+  async getVehicleHistory(deviceId: string, startDate: string, endDate: string): Promise<any> {
+    if (!this.authToken) throw new Error('Not authenticated');
 
-    if (!response.ok) {
-      throw new Error(`Ubiwan API error: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Fetch vehicle history between two dates
-   */
-  async getVehicleHistory(vehicleId: string, startDate: string, endDate: string): Promise<any> {
     const response = await fetch(
-      `${this.apiUrl}/api/vehicles/${vehicleId}/history?from=${startDate}&to=${endDate}`,
-      { headers: this.getAuthHeaders() },
+      `${this.apiUrl}/user_session?token=${encodeURIComponent(this.authToken)}&uid_device=${encodeURIComponent(deviceId)}&start_time=${encodeURIComponent(startDate)}&end_time=${encodeURIComponent(endDate)}`,
+      { headers: { 'Accept': 'application/json' } },
     );
 
     if (!response.ok) {
@@ -200,28 +197,30 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
   }
 
   /**
-   * Normalize Ubiwan vehicle data to standard GPS format
+   * Normalize Ubiwan device data to standard GPS format
    */
-  private normalizeUbiwanData(vehicle: any): NormalizedGPSData | null {
-    const lat = vehicle.latitude || vehicle.lat || vehicle.position?.latitude;
-    const lng = vehicle.longitude || vehicle.lng || vehicle.lon || vehicle.position?.longitude;
+  private normalizeUbiwanData(device: any): NormalizedGPSData | null {
+    const lat = device.latitude || device.lat || device.gps?.latitude || device.position?.latitude;
+    const lng = device.longitude || device.lng || device.lon || device.gps?.longitude || device.position?.longitude;
 
     if (!lat || !lng) return null;
 
     return {
-      vehicleId: String(vehicle.id || vehicle.vehicleId || vehicle.imei),
+      vehicleId: String(device.uid_device || device.id || device.vehicleId || device.imei),
       lat: parseFloat(lat),
       lng: parseFloat(lng),
-      speed: parseFloat(vehicle.speed || vehicle.position?.speed || 0),
-      heading: parseFloat(vehicle.heading || vehicle.cap || vehicle.position?.heading || 0),
-      altitude: vehicle.altitude ? parseFloat(vehicle.altitude) : undefined,
-      timestamp: vehicle.timestamp
-        ? new Date(vehicle.timestamp)
-        : vehicle.lastUpdate
-          ? new Date(vehicle.lastUpdate)
-          : new Date(),
-      provider: 'ubiwan' as any,
-      raw: vehicle,
+      speed: parseFloat(device.speed || device.gps?.speed || device.position?.speed || 0),
+      heading: parseFloat(device.heading || device.cap || device.gps?.heading || device.position?.heading || 0),
+      altitude: device.altitude ? parseFloat(device.altitude) : undefined,
+      timestamp: device.timestamp
+        ? new Date(device.timestamp)
+        : device.lastUpdate
+          ? new Date(device.lastUpdate)
+          : device.date
+            ? new Date(device.date)
+            : new Date(),
+      provider: 'UBIWAN' as any,
+      raw: device,
     };
   }
 
