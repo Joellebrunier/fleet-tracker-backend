@@ -35,7 +35,7 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
     private configService: ConfigService,
     private normalizer: DataNormalizerService,
   ) {
-    // API has been redirected from api.ubiwan.net to api-fleet.moncoyote.com
+    // API redirected from api.ubiwan.net → api-fleet.moncoyote.com, versioned at /v53
     this.apiUrl = this.configService.get<string>('UBIWAN_API_URL', 'https://api-fleet.moncoyote.com');
     this.username = this.configService.get<string>('UBIWAN_USERNAME', '');
     this.password = this.configService.get<string>('UBIWAN_PASSWORD', '');
@@ -60,7 +60,7 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
     try {
       const md5Password = createHash('md5').update(this.password).digest('hex');
 
-      const authUrl = `${this.apiUrl}/auth?u=${encodeURIComponent(this.username)}&l=${encodeURIComponent(this.license)}&k=${encodeURIComponent(this.serverKey)}&p=${md5Password}`;
+      const authUrl = `${this.apiUrl}/v53/auth?u=${encodeURIComponent(this.username)}&l=${encodeURIComponent(this.license)}&k=${encodeURIComponent(this.serverKey)}&p=${md5Password}`;
 
       this.logger.log(`Ubiwan: authenticating as ${this.username} on ${this.serverName}...`);
 
@@ -89,22 +89,18 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
         const body = await authResponse.text();
         this.logger.error(`Ubiwan auth failed: ${authResponse.status} - ${body.substring(0, 300)}`);
 
-        // Fallback: try the old API URL
-        if (this.apiUrl !== 'https://api.ubiwan.net') {
-          this.logger.log('Ubiwan: trying fallback to api.ubiwan.net...');
-          const fallbackUrl = `https://api.ubiwan.net/auth?u=${encodeURIComponent(this.username)}&l=${encodeURIComponent(this.license)}&k=${encodeURIComponent(this.serverKey)}&p=${md5Password}`;
-          const fallbackResponse = await fetch(fallbackUrl, {
-            headers: { 'Accept': 'application/json' },
-            redirect: 'follow',
-          });
-          if (fallbackResponse.ok) {
-            const fallbackData = (await fallbackResponse.json()) as any;
-            this.authToken = fallbackData.token || fallbackData.result;
-            if (this.authToken) {
-              this.connected = true;
-              this.apiUrl = 'https://api.ubiwan.net';
-              this.logger.log('Ubiwan: connected via fallback URL');
-            }
+        // Fallback: try v50 API version
+        this.logger.log('Ubiwan: trying v50 fallback...');
+        const fallbackUrl = `${this.apiUrl}/v50/auth?u=${encodeURIComponent(this.username)}&l=${encodeURIComponent(this.license)}&k=${encodeURIComponent(this.serverKey)}&p=${md5Password}`;
+        const fallbackResponse = await fetch(fallbackUrl, {
+          headers: { 'Accept': 'application/json' },
+        });
+        if (fallbackResponse.ok) {
+          const fallbackData = (await fallbackResponse.json()) as any;
+          this.authToken = fallbackData.token;
+          if (this.authToken) {
+            this.connected = true;
+            this.logger.log('Ubiwan: connected via v50 fallback');
           }
         }
       }
@@ -132,9 +128,9 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
     if (!this.connected || !this.dataCallback || !this.authToken) return;
 
     try {
-      // Try fetching site/device list
+      // Fetch site data with device positions
       const response = await fetch(
-        `${this.apiUrl}/site?token=${encodeURIComponent(this.authToken)}`,
+        `${this.apiUrl}/v53/site?token=${encodeURIComponent(this.authToken)}&action=read`,
         { headers: { 'Accept': 'application/json' } },
       );
 
@@ -150,10 +146,9 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
 
       const data = (await response.json()) as any;
 
-      // The API structure may vary - handle different response shapes
-      const devices = Array.isArray(data)
-        ? data
-        : data.devices || data.vehicles || data.items || data.result || [];
+      // Ubiwan /site returns { result, read: { data: [...devices...], summary: [...] } }
+      const readData = data.read?.data || data.data || [];
+      const devices = Array.isArray(readData) ? readData : [];
 
       let totalProcessed = 0;
 
@@ -185,7 +180,7 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
     if (!this.authToken) throw new Error('Not authenticated');
 
     const response = await fetch(
-      `${this.apiUrl}/user_session?token=${encodeURIComponent(this.authToken)}&uid_device=${encodeURIComponent(deviceId)}&start_time=${encodeURIComponent(startDate)}&end_time=${encodeURIComponent(endDate)}`,
+      `${this.apiUrl}/v53/user_session?token=${encodeURIComponent(this.authToken)}&uid_device=${encodeURIComponent(deviceId)}&start_time=${encodeURIComponent(startDate)}&end_time=${encodeURIComponent(endDate)}`,
       { headers: { 'Accept': 'application/json' } },
     );
 
