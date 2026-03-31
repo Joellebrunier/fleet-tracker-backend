@@ -1,6 +1,5 @@
-import { IsString, IsEnum, IsObject, IsOptional, IsBoolean } from 'class-validator';
+import { IsString, IsObject, IsOptional, IsBoolean, IsNumber } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { GeofenceType } from '../entities/geofence.entity';
 
 export class UpdateGeofenceDto {
   @ApiPropertyOptional()
@@ -8,15 +7,15 @@ export class UpdateGeofenceDto {
   @IsString()
   name?: string;
 
-  @ApiPropertyOptional({ enum: GeofenceType })
-  @IsOptional()
-  @IsEnum(GeofenceType)
-  type?: GeofenceType;
-
   @ApiPropertyOptional()
   @IsOptional()
-  @IsObject()
-  geometry?: Record<string, any>;
+  @IsString()
+  description?: string;
+
+  @ApiPropertyOptional({ enum: ['CIRCLE', 'POLYGON', 'RECTANGLE'] })
+  @IsOptional()
+  @IsString()
+  type?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
@@ -32,4 +31,9 @@ export class UpdateGeofenceDto {
   @IsOptional()
   @IsObject()
   schedule?: Record<string, any>;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  priority?: number;
 }

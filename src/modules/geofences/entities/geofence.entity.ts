@@ -15,11 +15,18 @@ export class GeofenceEntity {
   @Column({ type: 'varchar' })
   name: string;
 
-  @Column({ type: 'enum', enum: GeofenceType })
-  type: GeofenceType;
+  @Column({ type: 'text', nullable: true })
+  description?: string;
 
-  @Column({ type: 'jsonb' })
-  geometry: Record<string, any>; // GeoJSON-like: { type: 'circle', coordinates: [lat, lng], radius: meters } or { type: 'polygon', coordinates: [[lat, lng], ...] }
+  @Column({ type: 'varchar' })
+  type: string;
+
+  // PostGIS geometry column - stored as GeoJSON text, read back as GeoJSON
+  @Column({ type: 'geometry', spatialFeatureType: 'Geometry', srid: 4326, nullable: true })
+  geometry?: any;
+
+  @Column({ type: 'float', nullable: true })
+  radius?: number;
 
   @Column({ type: 'varchar', nullable: true })
   color?: string;
@@ -30,8 +37,17 @@ export class GeofenceEntity {
   @Column({ type: 'boolean', default: true })
   isActive: boolean;
 
+  @Column({ type: 'boolean', default: false })
+  isTemporary: boolean;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  expiresAt?: Date;
+
   @Column({ type: 'jsonb', nullable: true })
-  schedule?: Record<string, any>; // { dayOfWeek: [1-7], startTime: '09:00', endTime: '17:00' }
+  schedule?: Record<string, any>;
+
+  @Column({ type: 'int', default: 0 })
+  priority: number;
 
   @CreateDateColumn()
   createdAt: Date;
