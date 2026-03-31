@@ -1,6 +1,6 @@
-import { Processor, Process, OnWorkerEvent } from '@nestjs/bull';
+import { Processor, Process } from '@nestjs/bull';
 import { Logger, Inject } from '@nestjs/common';
-import { Job } from 'bull';
+import { Job } from 'bullmq';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
 import { GpsHistoryService } from '@modules/gps-history/gps-history.service';
 import { VehiclesService } from '@modules/vehicles/vehicles.service';
@@ -42,13 +42,4 @@ export class GpsProcessorConsumer {
     }
   }
 
-  @OnWorkerEvent('completed')
-  onCompleted(job: Job): void {
-    this.logger.debug(`Completed job ${job.id} for ${job.name}`);
-  }
-
-  @OnWorkerEvent('failed')
-  onFailed(job: Job, error: Error): void {
-    this.logger.error(`Failed job ${job.id}: ${error.message}`);
-  }
 }

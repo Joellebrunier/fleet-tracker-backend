@@ -78,7 +78,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
    * API: GET /api/assets?limit=100&offset=0
    * Pagination: iterate with offset until all vehicles are fetched
    */
-  @Cron(CronExpression.EVERY_2_MINUTES)
+  @Cron('*/2 * * * *')
   async pollEchoesApi(): Promise<void> {
     if (!this.connected || !this.dataCallback) return;
 
@@ -104,7 +104,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
           break;
         }
 
-        const data = await response.json();
+        const data = (await response.json()) as any;
         const vehicles = data.items || data || [];
 
         if (!Array.isArray(vehicles) || vehicles.length === 0) {
@@ -234,10 +234,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
       heading: parseFloat(position.heading || position.course || 0),
       altitude: position.altitude ? parseFloat(position.altitude) : undefined,
       timestamp: position.timestamp ? new Date(position.timestamp) : new Date(),
-      provider: 'echoes',
-      ignition: position.ignition,
-      batteryVoltage: position.batteryVoltage || position.battery,
-      odometer: position.odometer || position.mileage,
+      provider: 'echoes' as any,
       raw: vehicle,
     };
   }

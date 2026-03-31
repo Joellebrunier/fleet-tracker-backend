@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bull';
+import { BullModule, BullRootModuleOptions } from '@nestjs/bull';
 import { ConfigService } from '@nestjs/config';
 import { IConfiguration } from '@config/configuration';
 import { GpsEventProducer } from './producers/gps-event.producer';
@@ -16,7 +16,7 @@ import { ReportsModule } from '@modules/reports/reports.module';
   imports: [
     BullModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (configService: ConfigService<IConfiguration>) => ({
+      useFactory: (configService: ConfigService<IConfiguration>): BullRootModuleOptions => ({
         redis: configService.get('REDIS_URL'),
         defaultJobOptions: {
           attempts: 3,
@@ -26,7 +26,7 @@ import { ReportsModule } from '@modules/reports/reports.module';
           },
           removeOnComplete: true,
         },
-      }),
+      } as any),
     }),
     BullModule.registerQueue(
       { name: 'gps-events' },

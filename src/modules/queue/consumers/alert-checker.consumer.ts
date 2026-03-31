@@ -1,6 +1,6 @@
-import { Processor, Process, OnWorkerEvent } from '@nestjs/bull';
+import { Processor, Process } from '@nestjs/bull';
 import { Logger, Inject } from '@nestjs/common';
-import { Job } from 'bull';
+import { Job } from 'bullmq';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
 import { AlertsService } from '@modules/alerts/alerts.service';
 import { GeofencesService } from '@modules/geofences/geofences.service';
@@ -70,13 +70,4 @@ export class AlertCheckerConsumer {
     }
   }
 
-  @OnWorkerEvent('completed')
-  onCompleted(job: Job): void {
-    this.logger.debug(`Completed alert check job ${job.id}`);
-  }
-
-  @OnWorkerEvent('failed')
-  onFailed(job: Job, error: Error): void {
-    this.logger.error(`Failed alert check job ${job.id}: ${error.message}`);
-  }
 }

@@ -1,6 +1,7 @@
-import { Processor, Process, OnWorkerEvent, Cron, CronExpression } from '@nestjs/bull';
+import { Processor, Process } from '@nestjs/bull';
 import { Logger, Inject } from '@nestjs/common';
-import { Job } from 'bull';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { Job } from 'bullmq';
 import { ReportsService } from '@modules/reports/reports.service';
 import { GenerateReportDto, ReportType } from '@modules/reports/dto/generate-report.dto';
 
@@ -35,13 +36,4 @@ export class ReportGeneratorConsumer {
     // TODO: Get all organizations and queue daily reports
   }
 
-  @OnWorkerEvent('completed')
-  onCompleted(job: Job): void {
-    this.logger.debug(`Completed report generation job ${job.id}`);
-  }
-
-  @OnWorkerEvent('failed')
-  onFailed(job: Job, error: Error): void {
-    this.logger.error(`Failed report generation job ${job.id}: ${error.message}`);
-  }
 }

@@ -96,7 +96,7 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
   /**
    * Poll KeepTrace API every 2 minutes
    */
-  @Cron(CronExpression.EVERY_2_MINUTES)
+  @Cron('*/2 * * * *')
   async pollKeepTraceApi(): Promise<void> {
     if (!this.connected || !this.dataCallback) return;
 
@@ -114,7 +114,7 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
         return;
       }
 
-      const data = await response.json();
+      const data = (await response.json()) as any;
       const vehicles = Array.isArray(data) ? data : (data.vehicles || data.items || data.results || []);
       let totalProcessed = 0;
 
@@ -193,10 +193,7 @@ export class KeepTraceAdapter implements IGpsProvider, OnModuleInit {
         : vehicle.timestamp
           ? new Date(vehicle.timestamp)
           : new Date(),
-      provider: 'keeptrace',
-      ignition: vehicle.ignitionOn ?? vehicle.ignition,
-      batteryVoltage: vehicle.batteryLevel || vehicle.battery,
-      odometer: vehicle.odometer || vehicle.totalKm,
+      provider: 'keeptrace' as any,
       raw: vehicle,
     };
   }

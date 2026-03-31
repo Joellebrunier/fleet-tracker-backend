@@ -66,7 +66,7 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
       });
 
       if (authResponse.ok) {
-        const authData = await authResponse.json();
+        const authData = (await authResponse.json()) as any;
         this.sessionToken = authData.token || authData.sessionId || authData.access_token;
         this.connected = true;
         this.logger.log(`Ubiwan adapter connected (Server: ${this.serverName}, Account: INEHA FINANCE)`);
@@ -124,7 +124,7 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
    * Poll Ubiwan API every 2 minutes
    * Fetches all vehicles with their latest GPS positions
    */
-  @Cron(CronExpression.EVERY_2_MINUTES)
+  @Cron('*/2 * * * *')
   async pollUbiwanApi(): Promise<void> {
     if (!this.connected || !this.dataCallback) return;
 
@@ -144,7 +144,7 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
         return;
       }
 
-      const data = await response.json();
+      const data = (await response.json()) as any;
       const vehicles = Array.isArray(data) ? data : (data.vehicles || data.items || data.results || []);
       let totalProcessed = 0;
 
@@ -220,10 +220,7 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
         : vehicle.lastUpdate
           ? new Date(vehicle.lastUpdate)
           : new Date(),
-      provider: 'ubiwan',
-      ignition: vehicle.ignition ?? vehicle.contactOn,
-      batteryVoltage: vehicle.batteryVoltage || vehicle.battery,
-      odometer: vehicle.odometer || vehicle.totalDistance || vehicle.km,
+      provider: 'ubiwan' as any,
       raw: vehicle,
     };
   }
