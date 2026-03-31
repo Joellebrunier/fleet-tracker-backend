@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsEnum, IsUUID, IsNumber } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsUUID, IsNumber, IsObject } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { VehicleStatus } from '@common/enums/vehicle-status.enum';
 
@@ -50,4 +50,9 @@ export class CreateVehicleDto {
   @IsOptional()
   @IsEnum(VehicleStatus)
   status?: VehicleStatus;
+
+  @ApiPropertyOptional({ description: 'Provider-specific metadata (flespiChannelId, keeptraceId, echoesUid, etc.)' })
+  @IsOptional()
+  @IsObject()
+  metadata?: Record<string, any>;
 }
