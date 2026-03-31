@@ -1,4 +1,4 @@
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, HttpAdapterHost } from '@nestjs/core';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { HttpExceptionFilter } from '@common/filters/http-exception.filter';
@@ -26,7 +26,8 @@ async function bootstrap() {
   );
 
   // Global filters
-  app.useGlobalFilters(new HttpExceptionFilter(app.get('HttpAdapterHost')));
+  const httpAdapterHost = app.get(HttpAdapterHost);
+  app.useGlobalFilters(new HttpExceptionFilter(httpAdapterHost));
 
   // Global interceptors
   app.useGlobalInterceptors(
