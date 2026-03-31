@@ -1,6 +1,6 @@
 import { Processor, Process } from '@nestjs/bull';
 import { Logger, Inject } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Job } from 'bull';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
 import { GpsHistoryService } from '@modules/gps-history/gps-history.service';
 import { VehiclesService } from '@modules/vehicles/vehicles.service';

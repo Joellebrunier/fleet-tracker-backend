@@ -1,12 +1,13 @@
-import { Injectable, Inject, Logger } from '@nestjs/common';
-import { Queue } from 'bullmq';
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
 
 @Injectable()
 export class GpsEventProducer {
   private readonly logger = new Logger(GpsEventProducer.name);
 
-  constructor(@Inject('GPS_EVENTS_QUEUE') private gpsQueue: Queue) {}
+  constructor(@InjectQueue('gps-events') private gpsQueue: Queue) {}
 
   async produceGpsEvent(gpsData: NormalizedGPSData): Promise<void> {
     try {

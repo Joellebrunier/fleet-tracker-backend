@@ -1,7 +1,7 @@
 import { Processor, Process } from '@nestjs/bull';
 import { Logger, Inject } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { Job } from 'bullmq';
+import { Job } from 'bull';
 import { ReportsService } from '@modules/reports/reports.service';
 import { GenerateReportDto, ReportType } from '@modules/reports/dto/generate-report.dto';
 
