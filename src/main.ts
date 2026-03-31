@@ -9,9 +9,16 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // Global API prefix
+  app.setGlobalPrefix('api', {
+    exclude: ['/'],
+  });
+
   // Enable CORS
   app.enableCors({
-    origin: process.env.NODE_ENV === 'production' ? process.env.FRONTEND_URL : '*',
+    origin: process.env.FRONTEND_URL
+      ? process.env.FRONTEND_URL.split(',').map(s => s.trim())
+      : '*',
     credentials: true,
   });
 
@@ -53,7 +60,7 @@ async function bootstrap() {
     .build();
 
   const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/docs', app, document, {
+  SwaggerModule.setup('docs', app, document, {
     swaggerOptions: {
       persistAuthorization: true,
       defaultModelsExpandDepth: 2,
@@ -64,7 +71,7 @@ async function bootstrap() {
   await app.listen(port);
 
   console.log(`\n🚀 Fleet Tracker API running on http://localhost:${port}`);
-  console.log(`📚 Swagger docs available at http://localhost:${port}/api/docs\n`);
+  console.log(`📚 Swagger docs available at http://localhost:${port}/docs\n`);
 }
 
 bootstrap().catch((error) => {

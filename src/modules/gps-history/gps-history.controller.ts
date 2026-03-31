@@ -24,7 +24,14 @@ export class GpsHistoryController {
     @Param('organizationId') organizationId: string,
     @Query() query: QueryHistoryDto,
   ) {
-    return this.gpsHistoryService.getHistory(organizationId, query);
+    return this.gpsHistoryService.getHistory(
+      query.vehicleId,
+      query.startDate,
+      query.endDate,
+      query.page,
+      query.limit,
+      query.interval,
+    );
   }
 
   @Get(':vehicleId/playback')
@@ -35,12 +42,18 @@ export class GpsHistoryController {
     @Param('vehicleId') vehicleId: string,
     @Query() query: QueryHistoryDto,
   ) {
-    const historyQuery = { ...query, vehicleId };
-    const result = await this.gpsHistoryService.getHistory(organizationId, historyQuery);
+    const result = await this.gpsHistoryService.getHistory(
+      vehicleId,
+      query.startDate,
+      query.endDate,
+      query.page,
+      query.limit,
+      query.interval,
+    );
     return {
       vehicleId,
       data: result.data,
-      meta: result.meta,
+      total: result.total,
     };
   }
 }

@@ -38,7 +38,9 @@ export class AlertsController {
     @Param('organizationId') organizationId: string,
     @Query() query: QueryAlertsDto,
   ) {
-    return this.alertsService.getAlerts(organizationId, query);
+    const { vehicleId, type, severity, isAcknowledged, ...pagination } = query;
+    const filters = { vehicleId, type, severity, isAcknowledged };
+    return this.alertsService.getAlerts(organizationId, filters, pagination);
   }
 
   @Patch(':id/acknowledge')
@@ -50,7 +52,7 @@ export class AlertsController {
     @Param('id') id: string,
     @CurrentUser() user: UserPayload,
   ): Promise<AlertEntity> {
-    return this.alertsService.acknowledgeAlert(id, organizationId, user.userId);
+    return this.alertsService.acknowledgeAlert(id, user.userId);
   }
 
   @Post('acknowledge-multiple')
@@ -61,7 +63,7 @@ export class AlertsController {
     @Body() body: { ids: string[] },
     @CurrentUser() user: UserPayload,
   ): Promise<void> {
-    return this.alertsService.acknowledgeMultiple(body.ids, organizationId, user.userId);
+    return this.alertsService.acknowledgeMultiple(body.ids, user.userId);
   }
 
   @Post('rules')
@@ -93,7 +95,7 @@ export class AlertsController {
     @Param('ruleId') ruleId: string,
     @Body() updates: Partial<AlertRuleEntity>,
   ): Promise<AlertRuleEntity> {
-    return this.alertsService.updateAlertRule(ruleId, organizationId, updates);
+    return this.alertsService.updateAlertRule(ruleId, updates);
   }
 
   @Delete('rules/:ruleId')
@@ -103,6 +105,6 @@ export class AlertsController {
     @Param('organizationId') organizationId: string,
     @Param('ruleId') ruleId: string,
   ): Promise<void> {
-    return this.alertsService.deleteAlertRule(ruleId, organizationId);
+    return this.alertsService.deleteAlertRule(ruleId);
   }
 }

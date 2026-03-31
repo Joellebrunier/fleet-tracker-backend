@@ -26,20 +26,21 @@ export class AlertCheckerConsumer {
       const containingGeofences = await this.geofencesService.checkContainment(
         gpsData.lat,
         gpsData.lng,
+        organizationId,
       );
 
       for (const geofence of containingGeofences) {
         // TODO: Check previous position to determine entry/exit
         // and only create alert if state changed
 
-        await this.alertsService.createAlert(
-          AlertType.GEOFENCE_ENTRY,
-          AlertSeverity.MEDIUM,
-          gpsData.vehicleId,
+        await this.alertsService.createAlert({
+          type: AlertType.GEOFENCE_ENTRY,
+          severity: AlertSeverity.MEDIUM,
+          vehicleId: gpsData.vehicleId,
           organizationId,
-          `Vehicle entered geofence: ${geofence.name}`,
-          { geofenceId: geofence.id, geofenceName: geofence.name },
-        );
+          message: `Vehicle entered geofence: ${geofence.name}`,
+          data: { geofenceId: geofence.id, geofenceName: geofence.name },
+        });
       }
     } catch (error) {
       this.logger.error(`Failed to check geofences:`, error);
@@ -55,14 +56,14 @@ export class AlertCheckerConsumer {
 
     try {
       if (gpsData.speed > speedLimit) {
-        await this.alertsService.createAlert(
-          AlertType.OVERSPEED,
-          AlertSeverity.HIGH,
-          gpsData.vehicleId,
+        await this.alertsService.createAlert({
+          type: AlertType.OVERSPEED,
+          severity: AlertSeverity.HIGH,
+          vehicleId: gpsData.vehicleId,
           organizationId,
-          `Vehicle exceeding speed limit: ${gpsData.speed} km/h (limit: ${speedLimit} km/h)`,
-          { currentSpeed: gpsData.speed, speedLimit },
-        );
+          message: `Vehicle exceeding speed limit: ${gpsData.speed} km/h (limit: ${speedLimit} km/h)`,
+          data: { currentSpeed: gpsData.speed, speedLimit },
+        });
       }
     } catch (error) {
       this.logger.error(`Failed to check speed:`, error);

@@ -1,95 +1,74 @@
 import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, Between } from 'typeorm';
 import { GpsHistoryEntity } from './entities/gps-history.entity';
-import { QueryHistoryDto } from './dto/query-history.dto';
-import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
-import { IPaginatedResult } from '@common/interfaces/pagination.interface';
+import { Provider } from '@common/enums/provider.enum';
 
 @Injectable()
 export class GpsHistoryService {
-  private gpsHistory: GpsHistoryEntity[] = [];
+  constructor(
+    @InjectRepository(GpsHistoryEntity)
+    private gpsHistoryRepository: Repository<GpsHistoryEntity>,
+  ) {}
 
-  async recordPosition(gpsData: NormalizedGPSData, organizationId: string): Promise<GpsHistoryEntity> {
-    const record: GpsHistoryEntity = {
-      id: this.generateId(),
-      vehicleId: gpsData.vehicleId,
-      organizationId,
-      lat: gpsData.lat,
-      lng: gpsData.lng,
-      speed: gpsData.speed,
-      heading: gpsData.heading,
-      altitude: gpsData.altitude,
-      accuracy: gpsData.accuracy,
-      provider: gpsData.provider,
-      metadata: gpsData.raw,
-      createdAt: gpsData.timestamp,
-    };
-
-    this.gpsHistory.push(record);
-    return record;
+  async recordPosition(data: {
+    vehicleId: string;
+    organizationId: string;
+    lat: number;
+    lng: number;
+    speed?: number;
+    heading?: number;
+    altitude?: number;
+    accuracy?: number;
+    provider: Provider;
+    metadata?: Record<string, any>;
+  }): Promise<GpsHistoryEntity> {
+    const record = this.gpsHistoryRepository.create(data);
+    return this.gpsHistoryRepository.save(record);
   }
 
   async getHistory(
-    organizationId: string,
-    query: QueryHistoryDto,
-  ): Promise<IPaginatedResult<GpsHistoryEntity>> {
-    const startDate = new Date(query.startDate);
-    const endDate = new Date(query.endDate);
+    vehicleId: string,
+    startDate: string,
+    endDate: string,
+    page: number = 1,
+    limit: number = 100,
+    interval?: number,
+  ): Promise<{ data: GpsHistoryEntity[]; total: number }> {
+    const skip = (page - 1) * limit;
 
-    let records = this.gpsHistory.filter(
-      (r) =>
-        r.vehicleId === query.vehicleId &&
-        r.organizationId === organizationId &&
-        r.createdAt >= startDate &&
-        r.createdAt <= endDate,
-    );
+    const [data, total] = await this.gpsHistoryRepository.findAndCount({
+      where: {
+        vehicleId,
+        createdAt: Between(new Date(startDate), new Date(endDate)),
+      },
+      order: { createdAt: 'ASC' },
+      skip,
+      take: limit,
+    });
 
-    records.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-
-    // Apply interval-based sampling if specified
-    if (query.interval) {
-      records = this.applyIntervalSampling(records, query.interval);
+    if (interval && interval > 0 && data.length > 0) {
+      return { data: this.applyIntervalSampling(data, interval), total };
     }
 
-    const page = query.page || 1;
-    const limit = query.limit || 100;
-    const skip = (page - 1) * limit;
-    const total = records.length;
-
-    const data = records.slice(skip, skip + limit);
-
-    return {
-      data,
-      meta: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-        hasNextPage: page < Math.ceil(total / limit),
-        hasPrevPage: page > 1,
-      },
-    };
+    return { data, total };
   }
 
   private applyIntervalSampling(records: GpsHistoryEntity[], intervalSeconds: number): GpsHistoryEntity[] {
-    if (records.length === 0) return [];
+    if (records.length === 0) return records;
 
-    const sampled: GpsHistoryEntity[] = [];
-    let lastTimestamp = records[0].createdAt.getTime();
-
-    sampled.push(records[0]);
+    const sampled: GpsHistoryEntity[] = [records[0]];
+    let lastTime = new Date(records[0].createdAt).getTime();
+    const intervalMs = intervalSeconds * 1000;
 
     for (let i = 1; i < records.length; i++) {
-      const currentTime = records[i].createdAt.getTime();
-      if (currentTime - lastTimestamp >= intervalSeconds * 1000) {
+      const currentTime = new Date(records[i].createdAt).getTime();
+      if (currentTime - lastTime >= intervalMs) {
         sampled.push(records[i]);
-        lastTimestamp = currentTime;
+        lastTime = currentTime;
       }
     }
 
     return sampled;
-  }
-
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
   }
 }

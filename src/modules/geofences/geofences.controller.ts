@@ -91,6 +91,6 @@ export class GeofencesController {
     @Param('id') geofenceId: string,
     @Param('vehicleId') vehicleId: string,
   ): Promise<any> {
-    return this.geofencesService.assignToVehicle(geofenceId, vehicleId, organizationId);
+    return this.geofencesService.assignToVehicle(geofenceId, vehicleId);
   }
 }

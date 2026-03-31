@@ -1,59 +1,47 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { GeofenceEntity } from './entities/geofence.entity';
+import { VehicleGeofenceEntity } from './entities/vehicle-geofence.entity';
 import { CreateGeofenceDto } from './dto/create-geofence.dto';
 import { UpdateGeofenceDto } from './dto/update-geofence.dto';
-import { GeofenceEntity, GeofenceType } from './entities/geofence.entity';
-import { VehicleGeofenceEntity } from './entities/vehicle-geofence.entity';
 import { PaginationDto } from '@common/dto/pagination.dto';
 import { IPaginatedResult } from '@common/interfaces/pagination.interface';
 
 @Injectable()
 export class GeofencesService {
-  private geofences: Map<string, GeofenceEntity> = new Map();
-  private vehicleGeofences: Map<string, VehicleGeofenceEntity[]> = new Map();
+  constructor(
+    @InjectRepository(GeofenceEntity)
+    private geofencesRepository: Repository<GeofenceEntity>,
+    @InjectRepository(VehicleGeofenceEntity)
+    private vehicleGeofencesRepository: Repository<VehicleGeofenceEntity>,
+  ) {}
 
-  async create(
-    createGeofenceDto: CreateGeofenceDto,
-    organizationId: string,
-  ): Promise<GeofenceEntity> {
-    const geofence: GeofenceEntity = {
-      id: this.generateId(),
-      name: createGeofenceDto.name,
-      type: createGeofenceDto.type,
-      geometry: createGeofenceDto.geometry,
-      color: createGeofenceDto.color,
+  async create(createDto: CreateGeofenceDto, organizationId: string): Promise<GeofenceEntity> {
+    const geofence = this.geofencesRepository.create({
+      ...createDto,
       organizationId,
-      isActive: createGeofenceDto.isActive ?? true,
-      schedule: createGeofenceDto.schedule,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.geofences.set(geofence.id, geofence);
-    return geofence;
+    });
+    return this.geofencesRepository.save(geofence);
   }
 
   async findAll(
     organizationId: string,
     paginationDto: PaginationDto,
   ): Promise<IPaginatedResult<GeofenceEntity>> {
-    const allGeofences = Array.from(this.geofences.values()).filter(
-      (g) => g.organizationId === organizationId,
-    );
-
     const { page = 1, limit = 20, sort = 'createdAt', order = 'DESC' } = paginationDto;
     const skip = (page - 1) * limit;
 
-    allGeofences.sort((a, b) => {
-      const aVal = a[sort as keyof GeofenceEntity] ?? '';
-      const bVal = b[sort as keyof GeofenceEntity] ?? '';
-
-      if (aVal < bVal) return order === 'ASC' ? -1 : 1;
-      if (aVal > bVal) return order === 'ASC' ? 1 : -1;
-      return 0;
+    const [data, total] = await this.geofencesRepository.findAndCount({
+      where: { organizationId },
+      order: { [sort]: order },
+      skip,
+      take: limit,
     });
-
-    const data = allGeofences.slice(skip, skip + limit);
-    const total = allGeofences.length;
 
     return {
       data,
@@ -69,131 +57,115 @@ export class GeofencesService {
   }
 
   async findById(id: string, organizationId: string): Promise<GeofenceEntity> {
-    const geofence = this.geofences.get(id);
+    const geofence = await this.geofencesRepository.findOne({ where: { id } });
 
-    if (!geofence || geofence.organizationId !== organizationId) {
+    if (!geofence) {
       throw new NotFoundException('Geofence not found');
+    }
+
+    if (geofence.organizationId !== organizationId) {
+      throw new ForbiddenException('Cannot access geofence from another organization');
     }
 
     return geofence;
   }
 
-  async update(
-    id: string,
-    organizationId: string,
-    updateGeofenceDto: UpdateGeofenceDto,
-  ): Promise<GeofenceEntity> {
-    const geofence = await this.findById(id, organizationId);
-
-    Object.assign(geofence, updateGeofenceDto);
-    geofence.updatedAt = new Date();
-    this.geofences.set(id, geofence);
-
-    return geofence;
+  async update(id: string, organizationId: string, updateDto: UpdateGeofenceDto): Promise<GeofenceEntity> {
+    await this.findById(id, organizationId);
+    await this.geofencesRepository.update(id, updateDto);
+    const result = await this.geofencesRepository.findOne({ where: { id } });
+    return result!;
   }
 
   async remove(id: string, organizationId: string): Promise<void> {
     await this.findById(id, organizationId);
-    this.geofences.delete(id);
-    this.vehicleGeofences.delete(id);
+    await this.vehicleGeofencesRepository.delete({ geofenceId: id });
+    await this.geofencesRepository.delete(id);
   }
 
   async assignToVehicle(
     geofenceId: string,
     vehicleId: string,
-    organizationId: string,
-    alertOnEntry = true,
-    alertOnExit = true,
+    alertOnEntry: boolean = true,
+    alertOnExit: boolean = true,
   ): Promise<VehicleGeofenceEntity> {
-    const geofence = await this.findById(geofenceId, organizationId);
-
-    const vgKey = `${vehicleId}-${geofenceId}`;
-    const existing = this.vehicleGeofences.get(vgKey);
-
+    const existing = await this.vehicleGeofencesRepository.findOne({
+      where: { geofenceId, vehicleId },
+    });
     if (existing) {
-      throw new BadRequestException('Geofence already assigned to vehicle');
+      await this.vehicleGeofencesRepository.update(existing.id, { alertOnEntry, alertOnExit });
+      const result = await this.vehicleGeofencesRepository.findOne({ where: { id: existing.id } });
+      return result!;
     }
 
-    const vehicleGeofence: VehicleGeofenceEntity = {
-      id: this.generateId(),
-      vehicleId,
+    const vg = this.vehicleGeofencesRepository.create({
       geofenceId,
+      vehicleId,
       alertOnEntry,
       alertOnExit,
-      createdAt: new Date(),
-    };
-
-    if (!this.vehicleGeofences.has(geofenceId)) {
-      this.vehicleGeofences.set(geofenceId, []);
-    }
-
-    this.vehicleGeofences.get(geofenceId)!.push(vehicleGeofence);
-    return vehicleGeofence;
+    });
+    return this.vehicleGeofencesRepository.save(vg);
   }
 
-  async checkContainment(lat: number, lng: number): Promise<GeofenceEntity[]> {
-    const contained: GeofenceEntity[] = [];
+  async checkContainment(
+    lat: number,
+    lng: number,
+    organizationId: string,
+  ): Promise<GeofenceEntity[]> {
+    const geofences = await this.geofencesRepository.find({
+      where: { organizationId, isActive: true },
+    });
 
-    for (const geofence of this.geofences.values()) {
-      if (!geofence.isActive) continue;
+    return geofences.filter((geofence) => {
+      const geo = geofence.geometry;
+      if (!geo) return false;
 
-      if (geofence.type === GeofenceType.CIRCLE) {
-        const centerLat = geofence.geometry.coordinates[0];
-        const centerLng = geofence.geometry.coordinates[1];
-        const radius = geofence.geometry.radius; // meters
-
-        const distance = this.calculateDistance(lat, lng, centerLat, centerLng);
-        if (distance <= radius) {
-          contained.push(geofence);
-        }
-      } else if (geofence.type === GeofenceType.POLYGON) {
-        if (this.isPointInPolygon(lat, lng, geofence.geometry.coordinates)) {
-          contained.push(geofence);
-        }
-      } else if (geofence.type === GeofenceType.RECTANGLE) {
-        const [minLat, minLng, maxLat, maxLng] = geofence.geometry.bounds;
-        if (lat >= minLat && lat <= maxLat && lng >= minLng && lng <= maxLng) {
-          contained.push(geofence);
-        }
+      switch (geofence.type) {
+        case 'CIRCLE':
+          if (geo.center && geo.radius) {
+            const distance = this.calculateDistance(lat, lng, geo.center.lat, geo.center.lng);
+            return distance <= geo.radius;
+          }
+          return false;
+        case 'POLYGON':
+          if (geo.coordinates && Array.isArray(geo.coordinates)) {
+            return this.isPointInPolygon(lat, lng, geo.coordinates);
+          }
+          return false;
+        case 'RECTANGLE':
+          if (geo.bounds) {
+            return (
+              lat >= geo.bounds.south &&
+              lat <= geo.bounds.north &&
+              lng >= geo.bounds.west &&
+              lng <= geo.bounds.east
+            );
+          }
+          return false;
+        default:
+          return false;
       }
-    }
-
-    return contained;
+    });
   }
 
   private calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
-    const R = 6371000; // Earth's radius in meters
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLng = ((lng2 - lng1) * Math.PI) / 180;
-
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLng / 2) *
-        Math.sin(dLng / 2);
-
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
+    const R = 6371e3;
+    const f1 = (lat1 * Math.PI) / 180;
+    const f2 = (lat2 * Math.PI) / 180;
+    const df = ((lat2 - lat1) * Math.PI) / 180;
+    const dl = ((lng2 - lng1) * Math.PI) / 180;
+    const a = Math.sin(df / 2) ** 2 + Math.cos(f1) * Math.cos(f2) * Math.sin(dl / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
-  private isPointInPolygon(lat: number, lng: number, polygon: number[][]): boolean {
+  private isPointInPolygon(lat: number, lng: number, polygon: { lat: number; lng: number }[]): boolean {
     let inside = false;
     for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      const [latI, lngI] = polygon[i];
-      const [latJ, lngJ] = polygon[j];
-
-      if (
-        lngI > lng !== lngJ > lng &&
-        lat < ((latJ - latI) * (lng - lngI)) / (lngJ - lngI) + latI
-      ) {
-        inside = !inside;
-      }
+      const xi = polygon[i].lat, yi = polygon[i].lng;
+      const xj = polygon[j].lat, yj = polygon[j].lng;
+      const intersect = yi > lng !== yj > lng && lat < ((xj - xi) * (lng - yi)) / (yj - yi) + xi;
+      if (intersect) inside = !inside;
     }
     return inside;
-  }
-
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
   }
 }

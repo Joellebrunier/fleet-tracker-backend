@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
+import { SnakeNamingStrategy } from 'typeorm-naming-strategies';
 
 import { configuration, getConfiguration } from '@config/configuration';
 import { configValidationSchema } from '@config/validation.schema';
@@ -39,7 +40,8 @@ import { SuperAdminModule } from '@modules/super-admin/super-admin.module';
           type: 'postgres' as const,
           url: config.DATABASE_URL,
           entities: [__dirname + '/**/*.entity{.ts,.js}'],
-          synchronize: config.isDevelopment,
+          namingStrategy: new SnakeNamingStrategy(),
+          synchronize: false,
           logging: config.isDevelopment,
           dropSchema: false,
           ssl: config.isProduction ? { rejectUnauthorized: false } : false,

@@ -1,81 +1,61 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { AlertEntity } from './entities/alert.entity';
 import { AlertRuleEntity } from './entities/alert-rule.entity';
-import { CreateAlertRuleDto } from './dto/create-alert-rule.dto';
-import { QueryAlertsDto } from './dto/query-alerts.dto';
 import { AlertType, AlertSeverity } from '@common/enums/alert-type.enum';
+import { PaginationDto } from '@common/dto/pagination.dto';
 import { IPaginatedResult } from '@common/interfaces/pagination.interface';
 
 @Injectable()
 export class AlertsService {
-  private alerts: Map<string, AlertEntity> = new Map();
-  private alertRules: Map<string, AlertRuleEntity> = new Map();
+  constructor(
+    @InjectRepository(AlertEntity)
+    private alertsRepository: Repository<AlertEntity>,
+    @InjectRepository(AlertRuleEntity)
+    private alertRulesRepository: Repository<AlertRuleEntity>,
+  ) {}
 
-  async createAlert(
-    type: AlertType,
-    severity: AlertSeverity,
-    vehicleId: string,
-    organizationId: string,
-    message: string,
-    data?: Record<string, any>,
-  ): Promise<AlertEntity> {
-    const alert: AlertEntity = {
-      id: this.generateId(),
-      type,
-      severity,
-      vehicleId,
-      organizationId,
-      message,
-      data,
-      isAcknowledged: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.alerts.set(alert.id, alert);
-    return alert;
+  async createAlert(data: {
+    type: AlertType;
+    severity: AlertSeverity;
+    vehicleId: string;
+    organizationId: string;
+    message: string;
+    data?: Record<string, any>;
+  }): Promise<AlertEntity> {
+    const alert = this.alertsRepository.create(data);
+    return this.alertsRepository.save(alert);
   }
 
   async getAlerts(
     organizationId: string,
-    query: QueryAlertsDto,
+    filters: {
+      vehicleId?: string;
+      type?: AlertType;
+      severity?: AlertSeverity;
+      isAcknowledged?: boolean;
+    },
+    paginationDto: PaginationDto,
   ): Promise<IPaginatedResult<AlertEntity>> {
-    let allAlerts = Array.from(this.alerts.values()).filter(
-      (a) => a.organizationId === organizationId,
-    );
-
-    // Apply filters
-    if (query.vehicleId) {
-      allAlerts = allAlerts.filter((a) => a.vehicleId === query.vehicleId);
-    }
-
-    if (query.type) {
-      allAlerts = allAlerts.filter((a) => a.type === query.type);
-    }
-
-    if (query.severity) {
-      allAlerts = allAlerts.filter((a) => a.severity === query.severity);
-    }
-
-    if (query.isAcknowledged !== undefined) {
-      allAlerts = allAlerts.filter((a) => a.isAcknowledged === query.isAcknowledged);
-    }
-
-    // Sort
-    const { page = 1, limit = 20, sort = 'createdAt', order = 'DESC' } = query;
+    const { page = 1, limit = 20, sort = 'createdAt', order = 'DESC' } = paginationDto;
     const skip = (page - 1) * limit;
 
-    allAlerts.sort((a, b) => {
-      const aVal = a[sort as keyof AlertEntity] ?? '';
-      const bVal = b[sort as keyof AlertEntity] ?? '';
+    const where: any = { organizationId };
+    if (filters.vehicleId) where.vehicleId = filters.vehicleId;
+    if (filters.type) where.type = filters.type;
+    if (filters.severity) where.severity = filters.severity;
+    if (filters.isAcknowledged !== undefined) where.isAcknowledged = filters.isAcknowledged;
 
-      if (aVal < bVal) return order === 'ASC' ? -1 : 1;
-      if (aVal > bVal) return order === 'ASC' ? 1 : -1;
-      return 0;
+    const [data, total] = await this.alertsRepository.findAndCount({
+      where,
+      order: { [sort]: order },
+      skip,
+      take: limit,
     });
-
-    const data = allAlerts.slice(skip, skip + limit);
-    const total = allAlerts.length;
 
     return {
       data,
@@ -90,94 +70,61 @@ export class AlertsService {
     };
   }
 
-  async acknowledgeAlert(id: string, organizationId: string, userId: string): Promise<AlertEntity> {
-    const alert = this.alerts.get(id);
+  async acknowledgeAlert(id: string, userId: string): Promise<AlertEntity> {
+    const alert = await this.alertsRepository.findOne({ where: { id } });
+    if (!alert) throw new NotFoundException('Alert not found');
 
-    if (!alert || alert.organizationId !== organizationId) {
-      throw new NotFoundException('Alert not found');
-    }
+    await this.alertsRepository.update(id, {
+      isAcknowledged: true,
+      acknowledgedBy: userId,
+      acknowledgedAt: new Date(),
+    });
 
-    alert.isAcknowledged = true;
-    alert.acknowledgedBy = userId;
-    alert.acknowledgedAt = new Date();
-    alert.updatedAt = new Date();
-
-    this.alerts.set(id, alert);
-    return alert;
+    const result = await this.alertsRepository.findOne({ where: { id } });
+    return result!;
   }
 
-  async acknowledgeMultiple(
-    ids: string[],
-    organizationId: string,
-    userId: string,
-  ): Promise<void> {
-    for (const id of ids) {
-      const alert = this.alerts.get(id);
-      if (alert && alert.organizationId === organizationId) {
-        alert.isAcknowledged = true;
-        alert.acknowledgedBy = userId;
-        alert.acknowledgedAt = new Date();
-        alert.updatedAt = new Date();
-        this.alerts.set(id, alert);
-      }
-    }
+  async acknowledgeMultiple(ids: string[], userId: string): Promise<void> {
+    await this.alertsRepository
+      .createQueryBuilder()
+      .update()
+      .set({
+        isAcknowledged: true,
+        acknowledgedBy: userId,
+        acknowledgedAt: new Date(),
+      })
+      .whereInIds(ids)
+      .execute();
   }
 
-  async createAlertRule(
-    createRuleDto: CreateAlertRuleDto,
-    organizationId: string,
-  ): Promise<AlertRuleEntity> {
-    const rule: AlertRuleEntity = {
-      id: this.generateId(),
-      name: createRuleDto.name,
-      type: createRuleDto.type,
-      conditions: createRuleDto.conditions,
+  // Alert Rules
+  async createAlertRule(data: Partial<AlertRuleEntity>, organizationId: string): Promise<AlertRuleEntity> {
+    const rule = this.alertRulesRepository.create({
+      ...data,
       organizationId,
-      isActive: createRuleDto.isActive ?? true,
-      notificationChannels: createRuleDto.notificationChannels,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.alertRules.set(rule.id, rule);
-    return rule;
+    });
+    return this.alertRulesRepository.save(rule);
   }
 
   async getAlertRules(organizationId: string): Promise<AlertRuleEntity[]> {
-    return Array.from(this.alertRules.values()).filter(
-      (r) => r.organizationId === organizationId,
-    );
+    return this.alertRulesRepository.find({
+      where: { organizationId },
+      order: { createdAt: 'DESC' },
+    });
   }
 
-  async updateAlertRule(
-    id: string,
-    organizationId: string,
-    updates: Partial<AlertRuleEntity>,
-  ): Promise<AlertRuleEntity> {
-    const rule = this.alertRules.get(id);
+  async updateAlertRule(id: string, data: Partial<AlertRuleEntity>): Promise<AlertRuleEntity> {
+    const rule = await this.alertRulesRepository.findOne({ where: { id } });
+    if (!rule) throw new NotFoundException('Alert rule not found');
 
-    if (!rule || rule.organizationId !== organizationId) {
-      throw new NotFoundException('Alert rule not found');
-    }
-
-    Object.assign(rule, updates);
-    rule.updatedAt = new Date();
-    this.alertRules.set(id, rule);
-
-    return rule;
+    await this.alertRulesRepository.update(id, data);
+    const result = await this.alertRulesRepository.findOne({ where: { id } });
+    return result!;
   }
 
-  async deleteAlertRule(id: string, organizationId: string): Promise<void> {
-    const rule = this.alertRules.get(id);
-
-    if (!rule || rule.organizationId !== organizationId) {
-      throw new NotFoundException('Alert rule not found');
-    }
-
-    this.alertRules.delete(id);
-  }
-
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  async deleteAlertRule(id: string): Promise<void> {
+    const rule = await this.alertRulesRepository.findOne({ where: { id } });
+    if (!rule) throw new NotFoundException('Alert rule not found');
+    await this.alertRulesRepository.delete(id);
   }
 }

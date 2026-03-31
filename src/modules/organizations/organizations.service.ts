@@ -1,65 +1,54 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { OrganizationEntity } from './entities/organization.entity';
 import { CreateOrganizationDto } from './dto/create-organization.dto';
 import { UpdateOrganizationDto } from './dto/update-organization.dto';
-import { OrganizationEntity } from './entities/organization.entity';
 
 @Injectable()
 export class OrganizationsService {
-  private organizations: Map<string, OrganizationEntity> = new Map();
+  constructor(
+    @InjectRepository(OrganizationEntity)
+    private organizationsRepository: Repository<OrganizationEntity>,
+  ) {}
 
-  async create(createOrgDto: CreateOrganizationDto): Promise<OrganizationEntity> {
-    const existing = this.getBySlug(createOrgDto.slug);
+  async create(createDto: CreateOrganizationDto): Promise<OrganizationEntity> {
+    const existing = await this.organizationsRepository.findOne({
+      where: { slug: createDto.slug },
+    });
     if (existing) {
-      throw new BadRequestException('Organization slug already exists');
+      throw new BadRequestException('Organization with this slug already exists');
     }
 
-    const org: OrganizationEntity = {
-      id: this.generateId(),
-      name: createOrgDto.name,
-      slug: createOrgDto.slug,
-      settings: createOrgDto.settings || {},
-      isActive: true,
-      subscriptionStatus: 'active',
-      apiKeys: {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.organizations.set(org.id, org);
-    return org;
+    const org = this.organizationsRepository.create(createDto);
+    return this.organizationsRepository.save(org);
   }
 
   async findAll(): Promise<OrganizationEntity[]> {
-    return Array.from(this.organizations.values());
+    return this.organizationsRepository.find({ order: { createdAt: 'DESC' } });
   }
 
   async findById(id: string): Promise<OrganizationEntity> {
-    const org = this.organizations.get(id);
+    const org = await this.organizationsRepository.findOne({ where: { id } });
     if (!org) {
       throw new NotFoundException('Organization not found');
     }
     return org;
   }
 
-  async update(id: string, updateOrgDto: UpdateOrganizationDto): Promise<OrganizationEntity> {
+  async update(id: string, updateDto: UpdateOrganizationDto): Promise<OrganizationEntity> {
     const org = await this.findById(id);
-    Object.assign(org, updateOrgDto);
-    org.updatedAt = new Date();
-    this.organizations.set(id, org);
-    return org;
+    await this.organizationsRepository.update(id, updateDto);
+    const result = await this.organizationsRepository.findOne({ where: { id } });
+    return result!;
   }
 
   async remove(id: string): Promise<void> {
     await this.findById(id);
-    this.organizations.delete(id);
-  }
-
-  private getBySlug(slug: string): OrganizationEntity | undefined {
-    const orgs = Array.from(this.organizations.values());
-    return orgs.find((o) => o.slug === slug);
-  }
-
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    await this.organizationsRepository.delete(id);
   }
 }

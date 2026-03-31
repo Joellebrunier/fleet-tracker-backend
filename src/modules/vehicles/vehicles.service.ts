@@ -1,69 +1,55 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { VehicleEntity } from './entities/vehicle.entity';
+import { VehicleGroupEntity } from './entities/vehicle-group.entity';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
-import { VehicleEntity } from './entities/vehicle.entity';
 import { PaginationDto } from '@common/dto/pagination.dto';
 import { IPaginatedResult } from '@common/interfaces/pagination.interface';
-import { VehicleStatus } from '@common/enums/vehicle-status.enum';
 
 @Injectable()
 export class VehiclesService {
-  private vehicles: Map<string, VehicleEntity> = new Map();
+  constructor(
+    @InjectRepository(VehicleEntity)
+    private vehiclesRepository: Repository<VehicleEntity>,
+    @InjectRepository(VehicleGroupEntity)
+    private vehicleGroupsRepository: Repository<VehicleGroupEntity>,
+  ) {}
 
-  async create(
-    createVehicleDto: CreateVehicleDto,
-    organizationId: string,
-  ): Promise<VehicleEntity> {
-    const existing = this.getByPlateAndOrg(createVehicleDto.plate, organizationId);
+  async create(createDto: CreateVehicleDto, organizationId: string): Promise<VehicleEntity> {
+    const existing = await this.vehiclesRepository.findOne({
+      where: { plate: createDto.plate, organizationId },
+    });
     if (existing) {
-      throw new BadRequestException('Vehicle with this plate already exists in organization');
+      throw new BadRequestException('Vehicle with this plate already exists in your organization');
     }
 
-    const vehicle: VehicleEntity = {
-      id: this.generateId(),
-      name: createVehicleDto.name,
-      plate: createVehicleDto.plate,
-      vin: createVehicleDto.vin,
-      brand: createVehicleDto.brand,
-      model: createVehicleDto.model,
-      year: createVehicleDto.year,
-      type: createVehicleDto.type,
-      groupId: createVehicleDto.groupId,
+    const vehicle = this.vehiclesRepository.create({
+      ...createDto,
       organizationId,
-      deviceImei: createVehicleDto.deviceImei,
-      currentSpeed: 0,
-      status: createVehicleDto.status || VehicleStatus.ACTIVE,
-      metadata: {},
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.vehicles.set(vehicle.id, vehicle);
-    return vehicle;
+    });
+    return this.vehiclesRepository.save(vehicle);
   }
 
   async findAll(
     organizationId: string,
     paginationDto: PaginationDto,
   ): Promise<IPaginatedResult<VehicleEntity>> {
-    const allVehicles = Array.from(this.vehicles.values()).filter(
-      (v) => v.organizationId === organizationId,
-    );
-
     const { page = 1, limit = 20, sort = 'createdAt', order = 'DESC' } = paginationDto;
     const skip = (page - 1) * limit;
 
-    allVehicles.sort((a, b) => {
-      const aVal = a[sort as keyof VehicleEntity] ?? '';
-      const bVal = b[sort as keyof VehicleEntity] ?? '';
-
-      if (aVal < bVal) return order === 'ASC' ? -1 : 1;
-      if (aVal > bVal) return order === 'ASC' ? 1 : -1;
-      return 0;
+    const [data, total] = await this.vehiclesRepository.findAndCount({
+      where: { organizationId },
+      order: { [sort]: order },
+      skip,
+      take: limit,
     });
-
-    const data = allVehicles.slice(skip, skip + limit);
-    const total = allVehicles.length;
 
     return {
       data,
@@ -79,63 +65,76 @@ export class VehiclesService {
   }
 
   async findById(id: string, organizationId: string): Promise<VehicleEntity> {
-    const vehicle = this.vehicles.get(id);
+    const vehicle = await this.vehiclesRepository.findOne({ where: { id } });
 
-    if (!vehicle || vehicle.organizationId !== organizationId) {
+    if (!vehicle) {
       throw new NotFoundException('Vehicle not found');
+    }
+
+    if (vehicle.organizationId !== organizationId) {
+      throw new ForbiddenException('Cannot access vehicle from another organization');
     }
 
     return vehicle;
   }
 
-  async update(
-    id: string,
-    organizationId: string,
-    updateVehicleDto: UpdateVehicleDto,
-  ): Promise<VehicleEntity> {
-    const vehicle = await this.findById(id, organizationId);
-
-    Object.assign(vehicle, updateVehicleDto);
-    vehicle.updatedAt = new Date();
-    this.vehicles.set(id, vehicle);
-
-    return vehicle;
+  async update(id: string, organizationId: string, updateDto: UpdateVehicleDto): Promise<VehicleEntity> {
+    await this.findById(id, organizationId);
+    await this.vehiclesRepository.update(id, updateDto);
+    const result = await this.vehiclesRepository.findOne({ where: { id } });
+    return result!;
   }
 
   async updatePosition(
     id: string,
-    organizationId: string,
     lat: number,
     lng: number,
-    speed: number,
+    speed?: number,
     heading?: number,
   ): Promise<VehicleEntity> {
-    const vehicle = await this.findById(id, organizationId);
-
-    vehicle.currentLat = lat;
-    vehicle.currentLng = lng;
-    vehicle.currentSpeed = speed;
-    if (heading !== undefined) {
-      vehicle.currentHeading = heading;
-    }
-    vehicle.lastCommunication = new Date();
-    vehicle.updatedAt = new Date();
-
-    this.vehicles.set(id, vehicle);
-    return vehicle;
+    await this.vehiclesRepository.update(id, {
+      currentLat: lat,
+      currentLng: lng,
+      currentSpeed: speed || 0,
+      currentHeading: heading,
+      lastCommunication: new Date(),
+    });
+    const result = await this.vehiclesRepository.findOne({ where: { id } });
+    return result!;
   }
 
   async remove(id: string, organizationId: string): Promise<void> {
     await this.findById(id, organizationId);
-    this.vehicles.delete(id);
+    await this.vehiclesRepository.delete(id);
   }
 
-  private getByPlateAndOrg(plate: string, organizationId: string): VehicleEntity | undefined {
-    const vehicles = Array.from(this.vehicles.values());
-    return vehicles.find((v) => v.plate === plate && v.organizationId === organizationId);
+  // Vehicle Groups
+  async createGroup(name: string, organizationId: string, parentGroupId?: string): Promise<VehicleGroupEntity> {
+    const group = this.vehicleGroupsRepository.create({
+      name,
+      organizationId,
+      parentGroupId,
+    });
+    return this.vehicleGroupsRepository.save(group);
   }
 
-  private generateId(): string {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+  async findAllGroups(organizationId: string): Promise<VehicleGroupEntity[]> {
+    return this.vehicleGroupsRepository.find({
+      where: { organizationId },
+      order: { name: 'ASC' },
+    });
+  }
+
+  async findGroupById(id: string, organizationId: string): Promise<VehicleGroupEntity> {
+    const group = await this.vehicleGroupsRepository.findOne({ where: { id } });
+    if (!group || group.organizationId !== organizationId) {
+      throw new NotFoundException('Vehicle group not found');
+    }
+    return group;
+  }
+
+  async removeGroup(id: string, organizationId: string): Promise<void> {
+    await this.findGroupById(id, organizationId);
+    await this.vehicleGroupsRepository.delete(id);
   }
 }
