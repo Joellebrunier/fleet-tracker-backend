@@ -1,27 +1,14 @@
 # Multi-stage build for NestJS backend
-# Stage 1: Dependencies
-FROM node:20-alpine AS deps
+# Stage 1: Build
+FROM node:20-alpine AS builder
 
 WORKDIR /app
 
 # Copy package files
 COPY package.json package-lock.json ./
 
-# Install dependencies
-RUN npm ci --only=production && \
-    npm cache clean --force
-
-# Copy dev dependencies for build
-COPY package.json package-lock.json ./
+# Install all dependencies (including dev for build)
 RUN npm ci
-
-# Stage 2: Builder
-FROM node:20-alpine AS builder
-
-WORKDIR /app
-
-# Copy node_modules from deps stage
-COPY --from=deps /app/node_modules ./node_modules
 
 # Copy source code
 COPY . .
@@ -29,7 +16,7 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Stage 3: Production
+# Stage 2: Production
 FROM node:20-alpine
 
 # Install dumb-init for proper signal handling
@@ -40,12 +27,12 @@ WORKDIR /app
 # Set environment to production
 ENV NODE_ENV=production
 
-# Copy node_modules from deps stage (production only)
-COPY --from=deps /app/node_modules ./node_modules
+# Copy package files and install production deps only
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy compiled application from builder
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json ./package.json
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
