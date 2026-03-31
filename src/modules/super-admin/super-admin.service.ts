@@ -16,7 +16,7 @@ export class SuperAdminService {
       timestamp: new Date(),
       components: {
         database: { status: 'connected' },
-        redis: { status: 'connected' },
+        gpsPipeline: { status: 'direct_db', description: 'GPS data persisted directly to PostgreSQL' },
         gpsProviders: providersStatus,
       },
       uptime: process.uptime(),

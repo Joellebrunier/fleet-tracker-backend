@@ -27,7 +27,8 @@ import { GeofencesModule } from '@modules/geofences/geofences.module';
 import { AlertsModule } from '@modules/alerts/alerts.module';
 import { ReportsModule } from '@modules/reports/reports.module';
 import { GpsProvidersModule } from '@modules/gps-providers/gps-providers.module';
-import { QueueModule } from '@modules/queue/queue.module';
+// QueueModule removed: GPS pipeline now persists directly to DB (no Redis needed)
+// import { QueueModule } from '@modules/queue/queue.module';
 import { SuperAdminModule } from '@modules/super-admin/super-admin.module';
 
 const entities = [
@@ -80,7 +81,7 @@ const entities = [
     AlertsModule,
     ReportsModule,
     GpsProvidersModule,
-    QueueModule,
+    // QueueModule, // Disabled: requires Redis; GPS data pipeline uses direct DB persistence
     SuperAdminModule,
   ],
 })

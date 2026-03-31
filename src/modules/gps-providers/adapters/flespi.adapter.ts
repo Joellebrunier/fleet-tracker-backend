@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as mqtt from 'mqtt';
 import { IConfiguration } from '@config/configuration';
@@ -7,7 +7,7 @@ import { DataNormalizerService } from '../normalizer/data-normalizer.service';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
 
 @Injectable()
-export class FlespiAdapter implements IGpsProvider {
+export class FlespiAdapter implements IGpsProvider, OnModuleInit {
   private client: mqtt.MqttClient | null = null;
   private dataCallback: ((data: NormalizedGPSData) => void) | null = null;
   private readonly logger = new Logger(FlespiAdapter.name);
@@ -17,11 +17,25 @@ export class FlespiAdapter implements IGpsProvider {
     private normalizer: DataNormalizerService,
   ) {}
 
+  async onModuleInit() {
+    const token = this.configService.get('FLESPI_TOKEN');
+    if (token) {
+      await this.connect();
+    } else {
+      this.logger.warn('Flespi MQTT token not configured, adapter disabled');
+    }
+  }
+
   async connect(): Promise<void> {
     try {
-      const host = this.configService.get('FLESPI_MQTT_HOST');
+      const host = this.configService.get('FLESPI_MQTT_HOST') || 'mqtt.flespi.io';
       const port = this.configService.get('FLESPI_MQTT_PORT', 8883);
       const token = this.configService.get('FLESPI_TOKEN');
+
+      if (!token) {
+        this.logger.warn('Flespi token not set, skipping connection');
+        return;
+      }
 
       this.client = mqtt.connect(`mqtts://${host}:${port}`, {
         username: 'flespi',
