@@ -110,7 +110,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
       this.logger.log(
         `Using existing Privacy Key (expires at ${new Date(best.expiredAt).toISOString()})`,
       );
-      return this.privacyKey;
+      return this.privacyKey!;
     }
 
     // No valid key found — create a new one with LOCATION feature
@@ -146,7 +146,7 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
     this.privacyKey = newKey.token;
     this.privacyKeyExpiry = now + this.PRIVACY_KEY_REFRESH_MS;
     this.logger.log(`Created new Privacy Key: ${newKey.token?.substring(0, 8)}...`);
-    return this.privacyKey;
+    return this.privacyKey!;
   }
 
   /**
