@@ -9,10 +9,16 @@ import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
  * Echoes GPS Adapter (Neutral Server API)
  *
  * Swagger: https://api.neutral-server.com/
- * Auth: Header "Authorization: Apikey <key>" or "Authorization: Privacykey <key>"
- * Vehicles: GET /api/accounts/{accountId}/assets?limit=100&offset=0
- * Single vehicle: GET /api/accounts/{accountId}/assets/{assetId}
- * Single by VIN: GET /api/accounts/{accountId}/assets/vins/{vin}
+ * 2-step authentication:
+ *   1. API Key → GET /api/accounts/{id}/privacy_key to list keys,
+ *      or POST with {"features":[...]} to create one
+ *   2. Privacy Key → all subsequent calls with "Authorization: Privacykey <token>"
+ *
+ * Endpoints:
+ *   - Assets:          GET /api/accounts/{id}/assets
+ *   - Last positions:  GET /api/accounts/{id}/reports/assets/{assetId}/last_locations?nbLocations=1
+ *   - Locations:       GET /api/accounts/{id}/assets/{assetId}/locations?period={"start":ms,"end":ms}
+ *   - Trips:           GET /api/accounts/{id}/assets/{assetId}/trips?period={"start":ms,"end":ms}
  */
 @Injectable()
 export class EchoesAdapter implements IGpsProvider, OnModuleInit {
@@ -25,6 +31,14 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
   private apiUrl: string;
   private apiKey: string;
   private accountId: string;
+
+  // Privacy Key cache (valid for 24h, we refresh at 20h)
+  private privacyKey: string | null = null;
+  private privacyKeyExpiry: number = 0;
+  private readonly PRIVACY_KEY_REFRESH_MS = 20 * 60 * 60 * 1000; // 20 hours
+
+  // Asset ID list cache (refreshed every poll)
+  private assetIds: number[] = [];
 
   constructor(
     private configService: ConfigService,
@@ -43,22 +57,151 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
     }
   }
 
-  async connect(): Promise<void> {
-    try {
-      // Test connection by fetching account info
-      const response = await fetch(`${this.apiUrl}/api/accounts/${this.accountId}`, {
+  /**
+   * Get a valid Privacy Key, reusing cached one if not expired.
+   * Step 1: GET existing keys with Apikey auth
+   * Step 2: Pick the latest valid key, or create a new one
+   */
+  private async getPrivacyKey(): Promise<string> {
+    const now = Date.now();
+
+    // Return cached key if still valid
+    if (this.privacyKey && now < this.privacyKeyExpiry) {
+      return this.privacyKey;
+    }
+
+    this.logger.log('Refreshing Echoes Privacy Key...');
+
+    // List existing privacy keys
+    const listResponse = await fetch(
+      `${this.apiUrl}/api/accounts/${this.accountId}/privacy_key`,
+      {
         headers: {
-          'Authorization': this.apiKey,
-          'Accept': 'application/json',
+          Authorization: `Apikey ${this.apiKey}`,
+          Accept: 'application/json',
+        },
+      },
+    );
+
+    if (!listResponse.ok) {
+      throw new Error(`Failed to list privacy keys: ${listResponse.status}`);
+    }
+
+    const keys = (await listResponse.json()) as any[];
+
+    // Find valid key with LOCATION feature, expiring furthest in the future
+    const validKeys = keys
+      .filter(
+        (k) =>
+          k.expiredAt > now &&
+          k.features &&
+          k.features.includes('LOCATION'),
+      )
+      .sort((a, b) => b.expiredAt - a.expiredAt);
+
+    if (validKeys.length > 0) {
+      const best = validKeys[0];
+      this.privacyKey = best.token;
+      // Refresh when the key is 80% through its lifetime or after 20h, whichever is sooner
+      this.privacyKeyExpiry = Math.min(
+        now + this.PRIVACY_KEY_REFRESH_MS,
+        best.expiredAt - 3600000, // 1h before actual expiry
+      );
+      this.logger.log(
+        `Using existing Privacy Key (expires at ${new Date(best.expiredAt).toISOString()})`,
+      );
+      return this.privacyKey;
+    }
+
+    // No valid key found — create a new one with LOCATION feature
+    this.logger.log('Creating new Echoes Privacy Key...');
+    const createResponse = await fetch(
+      `${this.apiUrl}/api/accounts/${this.accountId}/privacy_key`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Apikey ${this.apiKey}`,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          features: [
+            'LOCATION',
+            'TRIPS',
+            'SPEED',
+            'ODOMETER',
+            'GEOFENCING',
+            'ENERGY',
+          ],
+        }),
+      },
+    );
+
+    if (!createResponse.ok) {
+      const body = await createResponse.text();
+      throw new Error(`Failed to create privacy key: ${createResponse.status} - ${body}`);
+    }
+
+    const newKey = (await createResponse.json()) as any;
+    this.privacyKey = newKey.token;
+    this.privacyKeyExpiry = now + this.PRIVACY_KEY_REFRESH_MS;
+    this.logger.log(`Created new Privacy Key: ${newKey.token?.substring(0, 8)}...`);
+    return this.privacyKey;
+  }
+
+  /**
+   * Make an authenticated API call using the Privacy Key
+   */
+  private async apiCall(path: string): Promise<any> {
+    const token = await this.getPrivacyKey();
+    const response = await fetch(`${this.apiUrl}${path}`, {
+      headers: {
+        Authorization: `Privacykey ${token}`,
+        Accept: 'application/json',
+      },
+    });
+
+    if (response.status === 401) {
+      // Privacy key expired, clear cache and retry once
+      this.privacyKey = null;
+      this.privacyKeyExpiry = 0;
+      const newToken = await this.getPrivacyKey();
+      const retryResponse = await fetch(`${this.apiUrl}${path}`, {
+        headers: {
+          Authorization: `Privacykey ${newToken}`,
+          Accept: 'application/json',
         },
       });
+      if (!retryResponse.ok) {
+        throw new Error(`Echoes API error after retry: ${retryResponse.status}`);
+      }
+      return retryResponse.json();
+    }
 
-      if (response.ok) {
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`Echoes API error: ${response.status} - ${body.substring(0, 200)}`);
+    }
+
+    return response.json();
+  }
+
+  async connect(): Promise<void> {
+    try {
+      // Verify we can get a privacy key and list assets
+      await this.getPrivacyKey();
+      const assets = await this.apiCall(
+        `/api/accounts/${this.accountId}/assets`,
+      );
+
+      if (Array.isArray(assets)) {
+        this.assetIds = assets.map((a: any) => a.id);
         this.connected = true;
-        this.logger.log(`Echoes adapter connected (Account ID: ${this.accountId})`);
+        this.logger.log(
+          `Echoes adapter connected (Account: ${this.accountId}, ${this.assetIds.length} assets)`,
+        );
       } else {
-        const body = await response.text();
-        this.logger.error(`Echoes connection failed: ${response.status} ${response.statusText} - ${body}`);
+        this.logger.error('Echoes: unexpected assets response format');
       }
     } catch (error) {
       this.logger.error('Echoes connection error:', error);
@@ -67,6 +210,8 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
 
   async disconnect(): Promise<void> {
     this.connected = false;
+    this.privacyKey = null;
+    this.privacyKeyExpiry = 0;
     this.logger.log('Echoes adapter disconnected');
   }
 
@@ -75,166 +220,86 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
   }
 
   /**
-   * Poll Echoes API every 2 minutes
-   * Fetches all vehicles with their latest positions
-   * API: GET /api/accounts/{accountId}/assets?limit=100&offset=0
+   * Poll Echoes API every 2 minutes.
+   * Uses /reports/assets/{id}/last_locations for each asset to get latest position.
+   * Processes assets in batches to avoid overwhelming the API.
    */
   @Cron('*/2 * * * *')
   async pollEchoesApi(): Promise<void> {
     if (!this.connected || !this.dataCallback) return;
 
     try {
-      let offset = 0;
-      const limit = 100;
-      let hasMore = true;
+      // Refresh asset list periodically
+      if (this.assetIds.length === 0) {
+        const assets = await this.apiCall(
+          `/api/accounts/${this.accountId}/assets`,
+        );
+        if (Array.isArray(assets)) {
+          this.assetIds = assets.map((a: any) => a.id);
+        }
+      }
+
       let totalProcessed = 0;
 
-      while (hasMore) {
-        const response = await fetch(
-          `${this.apiUrl}/api/accounts/${this.accountId}/assets?limit=${limit}&offset=${offset}`,
-          {
-            headers: {
-              'Authorization': this.apiKey,
-              'Accept': 'application/json',
-            },
-          },
+      // Fetch last_locations for each asset (batch of 5 concurrent)
+      const batchSize = 5;
+      for (let i = 0; i < this.assetIds.length; i += batchSize) {
+        const batch = this.assetIds.slice(i, i + batchSize);
+
+        const results = await Promise.allSettled(
+          batch.map(async (assetId) => {
+            try {
+              const data = await this.apiCall(
+                `/api/accounts/${this.accountId}/reports/assets/${assetId}/last_locations?nbLocations=1`,
+              );
+
+              if (Array.isArray(data) && data.length > 0) {
+                const entry = data[0];
+                const loc = entry.location || entry;
+                const lat = loc.latitude;
+                const lng = loc.longitude;
+
+                if (lat && lng) {
+                  const normalized: NormalizedGPSData = {
+                    vehicleId: String(assetId),
+                    lat: parseFloat(lat),
+                    lng: parseFloat(lng),
+                    speed: loc.speed ? parseFloat(loc.speed) : 0,
+                    heading: loc.heading ? parseFloat(loc.heading) : 0,
+                    altitude: loc.altitude ? parseFloat(loc.altitude) : undefined,
+                    timestamp: loc.dateTime
+                      ? new Date(loc.dateTime)
+                      : new Date(),
+                    provider: 'ECHOES' as any,
+                    raw: entry,
+                  };
+
+                  if (this.normalizer.validate(normalized) && this.dataCallback) {
+                    this.dataCallback(normalized);
+                    return true;
+                  }
+                }
+              }
+              return false;
+            } catch {
+              return false;
+            }
+          }),
         );
 
-        if (!response.ok) {
-          this.logger.error(`Echoes API error: ${response.status} ${response.statusText}`);
-          break;
-        }
-
-        const data = (await response.json()) as any;
-        const vehicles = data.items || data || [];
-
-        if (!Array.isArray(vehicles) || vehicles.length === 0) {
-          hasMore = false;
-          break;
-        }
-
-        for (const vehicle of vehicles) {
-          try {
-            const normalized = this.normalizeEchoesData(vehicle);
-            if (normalized && this.normalizer.validate(normalized)) {
-              this.dataCallback(normalized);
-              totalProcessed++;
-            }
-          } catch (err) {
-            this.logger.warn(`Failed to normalize Echoes vehicle ${vehicle.uid || vehicle.id}: ${err}`);
-          }
-        }
-
-        offset += limit;
-        if (vehicles.length < limit) {
-          hasMore = false;
+        for (const r of results) {
+          if (r.status === 'fulfilled' && r.value) totalProcessed++;
         }
       }
 
       this.vehicleCount = totalProcessed;
       this.lastUpdate = new Date();
-      this.logger.debug(`Echoes poll complete: ${totalProcessed} vehicles processed`);
+      this.logger.debug(
+        `Echoes poll complete: ${totalProcessed}/${this.assetIds.length} assets with positions`,
+      );
     } catch (error) {
       this.logger.error('Echoes polling error:', error);
     }
-  }
-
-  /**
-   * Fetch a single vehicle's latest data by UID
-   */
-  async getVehicleByUid(uid: string): Promise<any> {
-    const response = await fetch(`${this.apiUrl}/api/accounts/${this.accountId}/assets/${uid}`, {
-      headers: {
-        'Authorization': this.apiKey,
-        'Accept': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Echoes API error: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Fetch a single vehicle's latest data by VIN
-   */
-  async getVehicleByVin(vin: string): Promise<any> {
-    const response = await fetch(`${this.apiUrl}/api/accounts/${this.accountId}/assets/vins/${vin}`, {
-      headers: {
-        'Authorization': this.apiKey,
-        'Accept': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Echoes API error: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Create a vehicle on Echoes platform
-   */
-  async createVehicle(params: {
-    name: string;
-    vin?: string;
-    brandName?: string;
-    fleetId?: number;
-    deviceTypeId?: number;
-  }): Promise<any> {
-    const body: any = {
-      name: params.name,
-      typeId: 3304, // Legacy field, required
-    };
-
-    if (params.vin) body.vin = params.vin;
-    if (params.brandName) body.brandName = params.brandName;
-    if (params.fleetId) body.fleetId = params.fleetId;
-    if (params.deviceTypeId) body.deviceTypeId = params.deviceTypeId;
-
-    const response = await fetch(`${this.apiUrl}/api/accounts/${this.accountId}/assets`, {
-      method: 'POST',
-      headers: {
-        'Authorization': this.apiKey,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Echoes create vehicle error: ${response.status} - ${error}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Normalize Echoes vehicle data to standard GPS format
-   */
-  private normalizeEchoesData(vehicle: any): NormalizedGPSData | null {
-    const position = vehicle.lastPosition || vehicle.position || vehicle;
-
-    const lat = position.latitude || position.lat;
-    const lng = position.longitude || position.lng || position.lon;
-
-    if (!lat || !lng) return null;
-
-    return {
-      vehicleId: String(vehicle.uid || vehicle.id),
-      lat: parseFloat(lat),
-      lng: parseFloat(lng),
-      speed: parseFloat(position.speed || 0),
-      heading: parseFloat(position.heading || position.course || 0),
-      altitude: position.altitude ? parseFloat(position.altitude) : undefined,
-      timestamp: position.timestamp ? new Date(position.timestamp) : new Date(),
-      provider: 'ECHOES' as any,
-      raw: vehicle,
-    };
   }
 
   async getStatus(): Promise<{
