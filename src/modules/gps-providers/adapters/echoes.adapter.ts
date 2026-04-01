@@ -186,23 +186,41 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
     return response.json();
   }
 
-  async connect(): Promise<void> {
-    try {
-      // Verify we can get a privacy key and list assets
-      await this.getPrivacyKey();
+  /**
+   * Fetch all assets with pagination (100 per page).
+   */
+  private async fetchAllAssetIds(): Promise<number[]> {
+    const ids: number[] = [];
+    let offset = 0;
+    const limit = 100;
+
+    while (true) {
       const assets = await this.apiCall(
-        `/api/accounts/${this.accountId}/assets`,
+        `/api/accounts/${this.accountId}/assets?limit=${limit}&offset=${offset}`,
       );
 
-      if (Array.isArray(assets)) {
-        this.assetIds = assets.map((a: any) => a.id);
-        this.connected = true;
-        this.logger.log(
-          `Echoes adapter connected (Account: ${this.accountId}, ${this.assetIds.length} assets)`,
-        );
-      } else {
-        this.logger.error('Echoes: unexpected assets response format');
+      if (!Array.isArray(assets) || assets.length === 0) break;
+
+      for (const a of assets) {
+        ids.push(a.id);
       }
+
+      if (assets.length < limit) break;
+      offset += limit;
+    }
+
+    return ids;
+  }
+
+  async connect(): Promise<void> {
+    try {
+      // Verify we can get a privacy key and list all assets (paginated)
+      await this.getPrivacyKey();
+      this.assetIds = await this.fetchAllAssetIds();
+      this.connected = true;
+      this.logger.log(
+        `Echoes adapter connected (Account: ${this.accountId}, ${this.assetIds.length} assets)`,
+      );
     } catch (error) {
       this.logger.error('Echoes connection error:', error);
     }
@@ -229,14 +247,10 @@ export class EchoesAdapter implements IGpsProvider, OnModuleInit {
     if (!this.connected || !this.dataCallback) return;
 
     try {
-      // Refresh asset list periodically
+      // Refresh asset list if empty (paginated fetch)
       if (this.assetIds.length === 0) {
-        const assets = await this.apiCall(
-          `/api/accounts/${this.accountId}/assets`,
-        );
-        if (Array.isArray(assets)) {
-          this.assetIds = assets.map((a: any) => a.id);
-        }
+        this.assetIds = await this.fetchAllAssetIds();
+        this.logger.log(`Echoes: refreshed asset list, ${this.assetIds.length} assets`);
       }
 
       let totalProcessed = 0;
