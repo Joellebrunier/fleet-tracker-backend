@@ -1,19 +1,20 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
-import { createHash } from 'crypto';
 import { IGpsProvider } from '../interfaces/gps-provider.interface';
 import { DataNormalizerService } from '../normalizer/data-normalizer.service';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
 
 /**
- * Ubiwan GPS Adapter (now api-fleet.moncoyote.com)
+ * Ubiwan GPS Adapter (api-fleet.moncoyote.com / api.ubiwan.net v53)
  *
- * API Docs: https://api-fleet.moncoyote.com/doc/public/index.html
- * Auth: GET /auth?u={username}&l={license}&k={serverKey}&p={md5password}
- * Returns a token for subsequent requests.
+ * Auth: GET /v53/auth?u={username}&l={license}&k={serverKey}&p={md5password}
+ * Returns { result: 201, token: "...", auth: { ... } }
  *
- * Vehicles/positions: GET /user_session?token={token}&uid_device={id}&start_time=...&end_time=...
+ * Positions: GET /v53/location?token={token}&timestamp=0
+ * Returns { location: { data: [ { uid, registration, latitude, longitude, speed_current, course, location_date, dev_hw_id, ... } ] } }
+ *
+ * The password is already MD5-hashed in the env var.
  */
 @Injectable()
 export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
@@ -22,12 +23,12 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
   private lastUpdate: Date | null = null;
   private vehicleCount = 0;
   private authToken: string | null = null;
+  private tokenExpiry: number = 0; // re-auth every 4 hours
   private readonly logger = new Logger(UbiwanAdapter.name);
 
   private apiUrl: string;
   private username: string;
-  private password: string;
-  private serverName: string;
+  private md5Password: string;
   private serverKey: string;
   private license: string;
 
@@ -35,17 +36,20 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
     private configService: ConfigService,
     private normalizer: DataNormalizerService,
   ) {
-    // API redirected from api.ubiwan.net → api-fleet.moncoyote.com, versioned at /v53
-    this.apiUrl = this.configService.get<string>('UBIWAN_API_URL', 'https://api-fleet.moncoyote.com');
+    // api.ubiwan.net redirects 301 → api-fleet.moncoyote.com
+    this.apiUrl = this.configService.get<string>(
+      'UBIWAN_API_URL',
+      'https://api-fleet.moncoyote.com',
+    );
     this.username = this.configService.get<string>('UBIWAN_USERNAME', '');
-    this.password = this.configService.get<string>('UBIWAN_PASSWORD', '');
-    this.serverName = this.configService.get<string>('UBIWAN_SERVER_NAME', 'Phoenix');
+    // The password env var stores the MD5 hash directly
+    this.md5Password = this.configService.get<string>('UBIWAN_PASSWORD', '');
     this.serverKey = this.configService.get<string>('UBIWAN_SERVER_KEY', '');
     this.license = this.configService.get<string>('UBIWAN_LICENSE', '');
   }
 
   async onModuleInit() {
-    if (this.username && this.password && this.license) {
+    if (this.username && this.md5Password && this.license) {
       await this.connect();
     } else {
       this.logger.warn('Ubiwan credentials not configured, adapter disabled');
@@ -54,55 +58,41 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
 
   /**
    * Authenticate with Ubiwan API
-   * GET /auth?u={username}&l={license}&k={serverKey}&p={md5password}
+   * GET /v53/auth?u={username}&l={license}&k={serverKey}&p={md5password}
+   * Response: { result: 201, token: "hex", auth: { uid, company, ... } }
    */
   async connect(): Promise<void> {
     try {
-      const md5Password = createHash('md5').update(this.password).digest('hex');
+      const authUrl = `${this.apiUrl}/v53/auth?u=${encodeURIComponent(this.username)}&l=${encodeURIComponent(this.license)}&k=${encodeURIComponent(this.serverKey)}&p=${this.md5Password}`;
 
-      const authUrl = `${this.apiUrl}/v53/auth?u=${encodeURIComponent(this.username)}&l=${encodeURIComponent(this.license)}&k=${encodeURIComponent(this.serverKey)}&p=${md5Password}`;
+      this.logger.log(`Ubiwan: authenticating as ${this.username}...`);
 
-      this.logger.log(`Ubiwan: authenticating as ${this.username} on ${this.serverName}...`);
-
-      const authResponse = await fetch(authUrl, {
-        headers: { 'Accept': 'application/json' },
+      const response = await fetch(authUrl, {
+        headers: { Accept: 'application/json' },
       });
 
-      if (authResponse.ok) {
-        const authData = (await authResponse.json()) as any;
-        // API returns token in the response
-        this.authToken = authData.token || authData.sessionId || authData.access_token || authData.result;
+      if (!response.ok) {
+        const body = await response.text();
+        this.logger.error(
+          `Ubiwan auth failed: ${response.status} - ${body.substring(0, 300)}`,
+        );
+        return;
+      }
 
-        if (this.authToken) {
-          this.connected = true;
-          this.logger.log(`Ubiwan adapter connected (Server: ${this.serverName}, Account: INEHA FINANCE)`);
-        } else {
-          this.logger.warn(`Ubiwan auth returned OK but no token found in response: ${JSON.stringify(authData).substring(0, 200)}`);
-          // Try using the whole response as token if it's a string
-          if (typeof authData === 'string') {
-            this.authToken = authData;
-            this.connected = true;
-            this.logger.log('Ubiwan: using raw response as token');
-          }
-        }
+      const authData = (await response.json()) as any;
+
+      if (authData.result === 201 && authData.token) {
+        this.authToken = authData.token;
+        this.connected = true;
+        this.tokenExpiry = Date.now() + 4 * 60 * 60 * 1000; // 4h
+        const company = authData.auth?.company || 'unknown';
+        this.logger.log(
+          `Ubiwan adapter connected (company: ${company}, uid: ${authData.auth?.uid})`,
+        );
       } else {
-        const body = await authResponse.text();
-        this.logger.error(`Ubiwan auth failed: ${authResponse.status} - ${body.substring(0, 300)}`);
-
-        // Fallback: try v50 API version
-        this.logger.log('Ubiwan: trying v50 fallback...');
-        const fallbackUrl = `${this.apiUrl}/v50/auth?u=${encodeURIComponent(this.username)}&l=${encodeURIComponent(this.license)}&k=${encodeURIComponent(this.serverKey)}&p=${md5Password}`;
-        const fallbackResponse = await fetch(fallbackUrl, {
-          headers: { 'Accept': 'application/json' },
-        });
-        if (fallbackResponse.ok) {
-          const fallbackData = (await fallbackResponse.json()) as any;
-          this.authToken = fallbackData.token;
-          if (this.authToken) {
-            this.connected = true;
-            this.logger.log('Ubiwan: connected via v50 fallback');
-          }
-        }
+        this.logger.error(
+          `Ubiwan auth unexpected result: ${JSON.stringify(authData).substring(0, 300)}`,
+        );
       }
     } catch (error) {
       this.logger.error('Ubiwan connection error:', error);
@@ -120,39 +110,65 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
   }
 
   /**
-   * Poll Ubiwan API every 2 minutes
-   * Uses the /site endpoint or similar to list devices, then fetches positions
+   * Ensure we have a valid token, re-auth if expired
+   */
+  private async ensureAuth(): Promise<boolean> {
+    if (!this.authToken || Date.now() > this.tokenExpiry) {
+      this.logger.log('Ubiwan: token expired or missing, re-authenticating...');
+      await this.connect();
+    }
+    return !!this.authToken;
+  }
+
+  /**
+   * Poll Ubiwan API every 2 minutes using the /location endpoint
+   * GET /v53/location?token={token}&timestamp=0
+   *
+   * Returns all devices with their last known position:
+   * {
+   *   location: {
+   *     data: [{
+   *       uid, registration, summary, latitude, longitude,
+   *       speed_current, course, location_date, dev_hw_id,
+   *       mileage, battery_level, address, ...
+   *     }]
+   *   }
+   * }
    */
   @Cron('*/2 * * * *')
   async pollUbiwanApi(): Promise<void> {
-    if (!this.connected || !this.dataCallback || !this.authToken) return;
+    if (!this.dataCallback) return;
+
+    const hasAuth = await this.ensureAuth();
+    if (!hasAuth) return;
 
     try {
-      // Fetch site data with device positions
       const response = await fetch(
-        `${this.apiUrl}/v53/site?token=${encodeURIComponent(this.authToken)}&action=read`,
-        { headers: { 'Accept': 'application/json' } },
+        `${this.apiUrl}/v53/location?token=${encodeURIComponent(this.authToken!)}&timestamp=0`,
+        { headers: { Accept: 'application/json' } },
       );
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
           this.logger.warn('Ubiwan session expired, reconnecting...');
+          this.authToken = null;
           await this.connect();
           return;
         }
-        this.logger.error(`Ubiwan API error: ${response.status} ${response.statusText}`);
+        this.logger.error(
+          `Ubiwan API error: ${response.status} ${response.statusText}`,
+        );
         return;
       }
 
       const data = (await response.json()) as any;
 
-      // Ubiwan /site returns { result, read: { data: [...devices...], summary: [...] } }
-      const readData = data.read?.data || data.data || [];
-      const devices = Array.isArray(readData) ? readData : [];
+      // /location returns { result, location: { data: [...], summary: [...] } }
+      const devices: any[] = data.location?.data || [];
 
       let totalProcessed = 0;
 
-      for (const device of (Array.isArray(devices) ? devices : [])) {
+      for (const device of devices) {
         try {
           const normalized = this.normalizeUbiwanData(device);
           if (normalized && this.normalizer.validate(normalized)) {
@@ -160,62 +176,65 @@ export class UbiwanAdapter implements IGpsProvider, OnModuleInit {
             totalProcessed++;
           }
         } catch (err) {
-          this.logger.warn(`Failed to normalize Ubiwan device ${device.uid_device || device.id || device.name}: ${err}`);
+          this.logger.warn(
+            `Failed to normalize Ubiwan device ${device.uid}: ${err}`,
+          );
         }
       }
 
       this.vehicleCount = totalProcessed;
       this.lastUpdate = new Date();
-      this.logger.debug(`Ubiwan poll complete: ${totalProcessed} vehicles processed`);
+      this.logger.log(
+        `Ubiwan poll complete: ${totalProcessed}/${devices.length} vehicles with GPS`,
+      );
     } catch (error) {
       this.logger.error('Ubiwan polling error:', error);
     }
   }
 
   /**
-   * Fetch vehicle session/history between two dates
-   * GET /user_session?token={token}&uid_device={deviceId}&start_time={start}&end_time={end}
-   */
-  async getVehicleHistory(deviceId: string, startDate: string, endDate: string): Promise<any> {
-    if (!this.authToken) throw new Error('Not authenticated');
-
-    const response = await fetch(
-      `${this.apiUrl}/v53/user_session?token=${encodeURIComponent(this.authToken)}&uid_device=${encodeURIComponent(deviceId)}&start_time=${encodeURIComponent(startDate)}&end_time=${encodeURIComponent(endDate)}`,
-      { headers: { 'Accept': 'application/json' } },
-    );
-
-    if (!response.ok) {
-      throw new Error(`Ubiwan API error: ${response.status}`);
-    }
-
-    return response.json();
-  }
-
-  /**
-   * Normalize Ubiwan device data to standard GPS format
+   * Normalize Ubiwan /location device data to standard GPS format
+   *
+   * Key fields from Ubiwan:
+   *   uid          - device UID (used as vehicleId → maps to metadata.ubiwanId)
+   *   latitude     - decimal
+   *   longitude    - decimal
+   *   speed_current - km/h
+   *   course       - heading in degrees
+   *   location_date - Unix timestamp (seconds)
+   *   dev_hw_id    - IMEI
+   *   registration - license plate
+   *   summary      - vehicle description
    */
   private normalizeUbiwanData(device: any): NormalizedGPSData | null {
-    const lat = device.latitude || device.lat || device.gps?.latitude || device.position?.latitude;
-    const lng = device.longitude || device.lng || device.lon || device.gps?.longitude || device.position?.longitude;
+    const lat = device.latitude;
+    const lng = device.longitude;
 
-    if (!lat || !lng) return null;
+    // Skip devices without GPS position
+    if (lat == null || lng == null) return null;
 
     return {
-      vehicleId: String(device.uid_device || device.id || device.vehicleId || device.imei),
+      vehicleId: String(device.uid),
       lat: parseFloat(lat),
       lng: parseFloat(lng),
-      speed: parseFloat(device.speed || device.gps?.speed || device.position?.speed || 0),
-      heading: parseFloat(device.heading || device.cap || device.gps?.heading || device.position?.heading || 0),
-      altitude: device.altitude ? parseFloat(device.altitude) : undefined,
-      timestamp: device.timestamp
-        ? new Date(device.timestamp)
-        : device.lastUpdate
-          ? new Date(device.lastUpdate)
-          : device.date
-            ? new Date(device.date)
-            : new Date(),
+      speed: parseFloat(device.speed_current || 0),
+      heading: parseFloat(device.course || 0),
+      altitude: undefined,
+      timestamp: device.location_date
+        ? new Date(device.location_date * 1000)
+        : new Date(),
       provider: 'UBIWAN' as any,
-      raw: device,
+      raw: {
+        uid: device.uid,
+        registration: device.registration,
+        summary: device.summary,
+        dev_hw_id: device.dev_hw_id,
+        mileage: device.mileage,
+        battery_level: device.battery_level,
+        battery_volt: device.battery_volt,
+        address: device.address,
+        hardware: device.hardware,
+      },
     };
   }
 
