@@ -9,6 +9,7 @@ import { UbiwanAdapter } from './adapters/ubiwan.adapter';
 import { KeepTraceAdapter } from './adapters/keeptrace.adapter';
 import { DataNormalizerService } from './normalizer/data-normalizer.service';
 import { TrackerDiscoveryService } from './tracker-discovery.service';
+import { GpsGateway } from './gps.gateway';
 import { VehicleEntity } from '@modules/vehicles/entities/vehicle.entity';
 import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.entity';
 
@@ -26,6 +27,7 @@ import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.enti
     KeepTraceAdapter,
     DataNormalizerService,
     TrackerDiscoveryService,
+    GpsGateway,
   ],
   exports: [
     GpsProvidersService,

@@ -1,10 +1,11 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, Inject, forwardRef } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { VehicleEntity } from '@modules/vehicles/entities/vehicle.entity';
 import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.entity';
 import { NormalizedGPSData } from '@common/interfaces/gps-data.interface';
 import { Provider } from '@common/enums/provider.enum';
+import { GpsGateway } from './gps.gateway';
 
 /**
  * Direct GPS data pipeline - persists GPS positions to the database
@@ -29,6 +30,8 @@ export class GpsDataPipelineService implements OnModuleInit {
     private vehiclesRepository: Repository<VehicleEntity>,
     @InjectRepository(GpsHistoryEntity)
     private gpsHistoryRepository: Repository<GpsHistoryEntity>,
+    @Inject(forwardRef(() => GpsGateway))
+    private gpsGateway: GpsGateway,
   ) {}
 
   async onModuleInit() {
@@ -134,6 +137,21 @@ export class GpsDataPipelineService implements OnModuleInit {
       });
 
       await this.gpsHistoryRepository.save(historyRecord);
+
+      // Broadcast via WebSocket to connected clients
+      try {
+        this.gpsGateway.broadcastPosition({
+          vehicleId,
+          lat: data.lat,
+          lng: data.lng,
+          speed: data.speed || 0,
+          heading: data.heading || 0,
+          timestamp: data.timestamp,
+          provider: data.provider,
+        });
+      } catch {
+        // Gateway may not be ready yet
+      }
 
       this.logger.debug(
         `GPS data persisted for vehicle ${vehicleId} (${data.provider}): ${data.lat},${data.lng} @ ${data.speed} km/h`,
