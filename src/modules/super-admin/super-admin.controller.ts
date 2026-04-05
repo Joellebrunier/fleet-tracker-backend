@@ -69,4 +69,11 @@ export class SuperAdminController {
     });
     return { success: true, message: 'Vehicle enrichment started in background. Check server logs for progress.' };
   }
+
+  @Get('debug-echoes-assets')
+  @ApiOperation({ summary: 'Debug: fetch raw asset data from Echoes API to inspect available fields' })
+  @ApiResponse({ status: 200 })
+  async debugEchoesAssets(): Promise<any> {
+    return this.trackerDiscovery.debugEchoesAssets();
+  }
 }

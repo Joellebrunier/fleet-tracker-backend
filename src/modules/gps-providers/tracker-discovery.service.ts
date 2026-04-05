@@ -1048,4 +1048,38 @@ export class TrackerDiscoveryService {
       );
     }
   }
+
+  async debugEchoesAssets(): Promise<any> {
+    const credMap = await this.loadAllCredentials();
+    const results: any[] = [];
+
+    for (const [orgId, creds] of credMap.entries()) {
+      const echoesCred = creds.get(Provider.ECHOES);
+      if (!echoesCred) continue;
+
+      try {
+        const apiUrl = echoesCred.apiUrl || 'https://api.neutral-server.com';
+        const privacyKey = await this.getEchoesPrivacyKey(echoesCred.apiKey, echoesCred.accountId, apiUrl);
+
+        const response = await fetch(
+          `${apiUrl}/api/accounts/${echoesCred.accountId}/assets?limit=5&offset=0`,
+          { headers: { Authorization: `Privacykey ${privacyKey}`, Accept: 'application/json' } },
+        );
+        if (!response.ok) {
+          results.push({ orgId, error: `API ${response.status}` });
+          continue;
+        }
+        const assets = await response.json();
+        results.push({
+          orgId,
+          assetCount: Array.isArray(assets) ? assets.length : 'not-array',
+          sampleAssets: Array.isArray(assets) ? assets.slice(0, 3) : assets,
+          allFieldsFirstAsset: Array.isArray(assets) && assets.length > 0 ? Object.keys(assets[0]) : [],
+        });
+      } catch (err: any) {
+        results.push({ orgId, error: err.message });
+      }
+    }
+    return results;
+  }
 }
