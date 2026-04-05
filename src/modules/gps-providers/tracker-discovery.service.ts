@@ -343,36 +343,35 @@ export class TrackerDiscoveryService {
       const deviceImei = asset.imei || asset.serialNumber || asset.serial || null;
       const type = asset.type || asset.category || 'car';
 
-      const vehicle = await this.vehiclesRepository.save(
-        this.vehiclesRepository.create({
-          organizationId: orgId,
-          name,
-          plate,
-          vin: vin || null,
-          brand,
-          model,
-          year: year ? Number(year) : null,
-          deviceImei,
-          type: type as any,
-          status: 'active' as any,
-          metadata: {
-            echoesUid: assetId,
-            echoesRaw: {
-              name: nameRaw,
-              registration,
-              vin: vinRaw,
-              brand: asset.brand,
-              model: asset.model,
-              type: asset.type,
-              category: asset.category,
-            },
+      const vehicleEntity = this.vehiclesRepository.create({
+        organizationId: orgId,
+        name,
+        plate,
+        vin: vin || undefined,
+        brand: brand || undefined,
+        model: model || undefined,
+        year: year ? Number(year) : undefined,
+        deviceImei: deviceImei || undefined,
+        type: type as any,
+        status: 'active' as any,
+        metadata: {
+          echoesUid: assetId,
+          echoesRaw: {
+            name: nameRaw,
+            registration,
+            vin: vinRaw,
+            brand: asset.brand,
+            model: asset.model,
+            type: asset.type,
+            category: asset.category,
           },
-        }),
-      );
+        },
+      } as any);
+      const vehicle = await this.vehiclesRepository.save(vehicleEntity);
       imported++;
       this.logger.log(`  [ECHOES][${orgId}] New asset: ${name} (id=${assetId}, plate=${plate}, vin=${vin || 'none'})`);
 
-      this.backfillEchoesHistory(vehicle.id, orgId, assetId, privacyKey, accountId, apiUrl).catch(
+      this.backfillEchoesHistory((vehicle as any).id, orgId, assetId, privacyKey, accountId, apiUrl).catch(
         (err) => this.logger.error(`  [ECHOES] Backfill failed ${assetId}: ${err.message}`),
       );
     }
