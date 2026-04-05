@@ -1149,71 +1149,83 @@ export class TrackerDiscoveryService {
           } catch (_) {}
         }
 
-        // 6. Resolve deviceAttributes IDs
-        let deviceAttributesResolved: any = null;
-        if (assetDetail?.deviceAttributes?.length > 0) {
-          // Try /api/device_attributes or /api/accounts/{id}/device_attributes
-          const attUrls = [
-            `${apiUrl}/api/device_attributes`,
-            `${apiUrl}/api/accounts/${echoesCred.accountId}/device_attributes`,
-            `${apiUrl}/api/attributes`,
-            `${apiUrl}/api/accounts/${echoesCred.accountId}/attributes`,
-          ];
-          for (const attUrl of attUrls) {
-            try {
-              const attResp = await fetch(attUrl, { headers });
-              if (attResp.ok) {
-                const attData = await attResp.json();
-                deviceAttributesResolved = {
-                  source: attUrl,
-                  data: attData,
-                  type: typeof attData,
-                  isArray: Array.isArray(attData),
-                  count: Array.isArray(attData) ? attData.length : Object.keys(attData || {}).length,
-                  sample: Array.isArray(attData) ? attData.slice(0, 10) : attData,
-                };
-                break;
-              }
-            } catch (_) {}
+        // 6. Brute-force discover all available API endpoints
+        const endpointDiscovery: any = {};
+        const accountBase = `${apiUrl}/api/accounts/${echoesCred.accountId}`;
+        const assetBase = firstAsset?.id ? `${accountBase}/assets/${firstAsset.id}` : null;
+
+        // Account-level endpoints
+        const accountEndpoints = [
+          'fleets', 'users', 'devices', 'device_types', 'device_attributes',
+          'attributes', 'alerts', 'geofences', 'geofencing', 'zones',
+          'reports', 'drivers', 'tags', 'groups', 'categories',
+          'maintenance', 'notifications', 'settings', 'metadata',
+          'odometers', 'energy', 'ecodriving', 'crash_events',
+        ];
+        for (const ep of accountEndpoints) {
+          try {
+            const resp = await fetch(`${accountBase}/${ep}`, { headers });
+            if (resp.ok) {
+              const body = await resp.json();
+              endpointDiscovery[`account/${ep}`] = {
+                status: resp.status,
+                type: Array.isArray(body) ? `array[${body.length}]` : typeof body,
+                sample: Array.isArray(body) ? body.slice(0, 2) : (typeof body === 'object' ? Object.keys(body || {}).slice(0, 20) : body),
+              };
+            } else {
+              endpointDiscovery[`account/${ep}`] = { status: resp.status };
+            }
+          } catch (e: any) {
+            endpointDiscovery[`account/${ep}`] = { error: e.message };
           }
-          if (!deviceAttributesResolved) deviceAttributesResolved = 'no-endpoint-found';
         }
 
-        // 7. Try device_types endpoint to resolve deviceTypeId
-        let deviceTypes: any = null;
-        try {
-          const dtUrls = [
-            `${apiUrl}/api/device_types`,
-            `${apiUrl}/api/accounts/${echoesCred.accountId}/device_types`,
+        // Asset-level endpoints
+        if (assetBase) {
+          const assetEndpoints = [
+            'datas', 'data', 'odometer', 'energy', 'ecodriving',
+            'crash_events', 'alerts', 'geofences', 'maintenance',
+            'status', 'realtime', 'lastknownlocation', 'last_location',
+            'speed', 'outputs', 'drivers', 'tags',
           ];
-          for (const dtUrl of dtUrls) {
-            const dtResp = await fetch(dtUrl, { headers });
-            if (dtResp.ok) {
-              const dtData = await dtResp.json();
-              deviceTypes = { source: dtUrl, sample: Array.isArray(dtData) ? dtData.slice(0, 5) : dtData };
-              break;
+          for (const ep of assetEndpoints) {
+            try {
+              const resp = await fetch(`${assetBase}/${ep}`, { headers });
+              if (resp.ok) {
+                const body = await resp.json();
+                endpointDiscovery[`asset/${ep}`] = {
+                  status: resp.status,
+                  type: Array.isArray(body) ? `array[${body.length}]` : typeof body,
+                  sample: Array.isArray(body) ? body.slice(0, 2) : (typeof body === 'object' ? Object.keys(body || {}).slice(0, 20) : body),
+                };
+              } else {
+                endpointDiscovery[`asset/${ep}`] = { status: resp.status };
+              }
+            } catch (e: any) {
+              endpointDiscovery[`asset/${ep}`] = { error: e.message };
             }
           }
-        } catch (_) {}
+        }
 
-        // 8. Try /api/accounts/{id}/assets/{id}/datas endpoint for real-time data
-        let assetDatas: any = null;
-        if (firstAsset?.id) {
-          const dataUrls = [
-            `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/datas`,
-            `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/data`,
-            `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/realtime`,
-            `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/status`,
-          ];
-          for (const dataUrl of dataUrls) {
-            try {
-              const dataResp = await fetch(dataUrl, { headers });
-              if (dataResp.ok) {
-                assetDatas = { source: dataUrl, data: await dataResp.json() };
-                break;
-              }
-            } catch (_) {}
-          }
+        // Also try Apikey auth for some endpoints
+        const apikeyHeaders = { Authorization: `Apikey ${echoesCred.apiKey}`, Accept: 'application/json' };
+        const apiKeyEndpoints = [
+          `${accountBase}/device_attributes`,
+          `${apiUrl}/api/device_attributes`,
+          `${accountBase}/fleets`,
+        ];
+        for (const ep of apiKeyEndpoints) {
+          try {
+            const resp = await fetch(ep, { headers: apikeyHeaders });
+            if (resp.ok) {
+              const body = await resp.json();
+              endpointDiscovery[`apikey:${ep.replace(apiUrl, '')}`] = {
+                status: resp.status,
+                type: Array.isArray(body) ? `array[${body.length}]` : typeof body,
+                sample: Array.isArray(body) ? body.slice(0, 3) : body,
+              };
+            }
+          } catch (_) {}
         }
 
         results.push({
@@ -1225,9 +1237,7 @@ export class TrackerDiscoveryService {
           assetExpanded: assetExpanded || 'not-available',
           lastLocation: lastLocation || 'not-available',
           tripsInfo: tripsInfo || 'not-available',
-          deviceAttributesResolved,
-          deviceTypes: deviceTypes || 'not-available',
-          assetDatas: assetDatas || 'not-available',
+          endpointDiscovery,
         });
       } catch (err: any) {
         results.push({ orgId, error: err.message });
