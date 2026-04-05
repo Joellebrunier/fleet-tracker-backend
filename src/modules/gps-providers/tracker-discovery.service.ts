@@ -1228,15 +1228,61 @@ export class TrackerDiscoveryService {
           } catch (_) {}
         }
 
+        // 9. Fetch locations with ALL fields (to see odometer, fuel, etc.)
+        let locationSample: any = null;
+        if (firstAsset?.id) {
+          try {
+            const now = Date.now();
+            const hourAgo = now - 3600000 * 24;
+            const period = JSON.stringify({ start: hourAgo, end: now });
+            const locResp = await fetch(
+              `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/locations?period=${encodeURIComponent(period)}`,
+              { headers },
+            );
+            if (locResp.ok) {
+              const locs = await locResp.json();
+              locationSample = {
+                count: Array.isArray(locs) ? locs.length : 'not-array',
+                allFieldsFirst: Array.isArray(locs) && locs.length > 0 ? Object.keys(locs[0]) : [],
+                samples: Array.isArray(locs) ? locs.slice(0, 3) : locs,
+                lastSample: Array.isArray(locs) && locs.length > 0 ? locs[locs.length - 1] : null,
+              };
+            }
+          } catch (_) {}
+        }
+
+        // 10. Fetch trips with a wider period (last 7 days)
+        let tripsDetailed: any = null;
+        if (firstAsset?.id) {
+          try {
+            const now = Date.now();
+            const weekAgo = now - 7 * 86400000;
+            const period = JSON.stringify({ start: weekAgo, end: now });
+            const trResp = await fetch(
+              `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/trips?period=${encodeURIComponent(period)}`,
+              { headers },
+            );
+            if (trResp.ok) {
+              const trData = (await trResp.json()) as any;
+              const trips = trData?.trips || trData;
+              tripsDetailed = {
+                rawKeys: Object.keys(trData || {}),
+                tripCount: Array.isArray(trips) ? trips.length : 'not-array',
+                sampleTrips: Array.isArray(trips) ? trips.slice(0, 3) : trips,
+                tripFields: Array.isArray(trips) && trips.length > 0 ? Object.keys(trips[0]) : [],
+              };
+            }
+          } catch (_) {}
+        }
+
         results.push({
           orgId,
           listFields: firstAsset ? Object.keys(firstAsset) : [],
           sampleFromList: firstAsset,
           assetDetailFields: assetDetail && !assetDetail.error ? Object.keys(assetDetail) : [],
           assetDetail,
-          assetExpanded: assetExpanded || 'not-available',
-          lastLocation: lastLocation || 'not-available',
-          tripsInfo: tripsInfo || 'not-available',
+          locationSample,
+          tripsDetailed,
           endpointDiscovery,
         });
       } catch (err: any) {
