@@ -1062,9 +1062,9 @@ export class TrackerDiscoveryService {
         const privacyKey = await this.getEchoesPrivacyKey(echoesCred.apiKey, echoesCred.accountId, apiUrl);
         const headers = { Authorization: `Privacykey ${privacyKey}`, Accept: 'application/json' };
 
-        // 1. List assets (first 3)
+        // 1. List assets (get more to find active ones)
         const listResp = await fetch(
-          `${apiUrl}/api/accounts/${echoesCred.accountId}/assets?limit=3&offset=0`,
+          `${apiUrl}/api/accounts/${echoesCred.accountId}/assets?limit=100&offset=0`,
           { headers },
         );
         if (!listResp.ok) {
@@ -1072,7 +1072,13 @@ export class TrackerDiscoveryService {
           continue;
         }
         const assets = await listResp.json();
-        const firstAsset = Array.isArray(assets) && assets.length > 0 ? assets[0] : null;
+        // Pick an active asset (prefer one with recent data) — use asset 1133404 if available, else first
+        let firstAsset: any = null;
+        if (Array.isArray(assets)) {
+          firstAsset = assets.find((a: any) => String(a.id) === '1133404')
+            || assets.find((a: any) => a.status === 'ENABLED')
+            || assets[0];
+        }
 
         // 2. Get single asset detail (might return more fields)
         let assetDetail: any = null;
@@ -1240,8 +1246,11 @@ export class TrackerDiscoveryService {
               { headers },
             );
             if (locResp.ok) {
-              const locs = await locResp.json();
+              const locsRaw = (await locResp.json()) as any;
+              // Response can be { locations: [] } or direct array
+              const locs = locsRaw?.locations || (Array.isArray(locsRaw) ? locsRaw : []);
               locationSample = {
+                rawResponseKeys: typeof locsRaw === 'object' && !Array.isArray(locsRaw) ? Object.keys(locsRaw) : 'direct-array',
                 count: Array.isArray(locs) ? locs.length : 'not-array',
                 allFieldsFirst: Array.isArray(locs) && locs.length > 0 ? Object.keys(locs[0]) : [],
                 samples: Array.isArray(locs) ? locs.slice(0, 3) : locs,
