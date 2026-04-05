@@ -324,20 +324,53 @@ export class TrackerDiscoveryService {
       const assetId = String(asset.id);
       if (existing.has(assetId)) continue;
 
-      const name = asset.name || asset.registration || `Echoes Asset ${assetId}`;
-      const plate = asset.registration || `ECHOES-${assetId}`;
+      // Extract all available fields from Echoes asset
+      const registration = asset.registration || asset.licensePlate || asset.plate || '';
+      const vinRaw = asset.vin || asset.VIN || '';
+      // Sometimes the VIN is in the name field (17 alphanumeric chars)
+      const nameRaw = asset.name || '';
+      const isNameVin = /^[A-HJ-NPR-Z0-9]{17}$/i.test(nameRaw);
+
+      const vin = vinRaw || (isNameVin ? nameRaw : '');
+      const name = isNameVin
+        ? (registration || asset.description || `Echoes Asset ${assetId}`)
+        : (nameRaw || registration || `Echoes Asset ${assetId}`);
+      const plate = registration || `ECHOES-${assetId}`;
+
+      const brand = asset.brand || asset.make || asset.manufacturer || null;
+      const model = asset.model || null;
+      const year = asset.year || asset.modelYear || null;
+      const deviceImei = asset.imei || asset.serialNumber || asset.serial || null;
+      const type = asset.type || asset.category || 'car';
 
       const vehicle = await this.vehiclesRepository.save(
         this.vehiclesRepository.create({
           organizationId: orgId,
           name,
           plate,
+          vin: vin || null,
+          brand,
+          model,
+          year: year ? Number(year) : null,
+          deviceImei,
+          type: type as any,
           status: 'active' as any,
-          metadata: { echoesUid: assetId },
+          metadata: {
+            echoesUid: assetId,
+            echoesRaw: {
+              name: nameRaw,
+              registration,
+              vin: vinRaw,
+              brand: asset.brand,
+              model: asset.model,
+              type: asset.type,
+              category: asset.category,
+            },
+          },
         }),
       );
       imported++;
-      this.logger.log(`  [ECHOES][${orgId}] New asset: ${name} (id=${assetId})`);
+      this.logger.log(`  [ECHOES][${orgId}] New asset: ${name} (id=${assetId}, plate=${plate}, vin=${vin || 'none'})`);
 
       this.backfillEchoesHistory(vehicle.id, orgId, assetId, privacyKey, accountId, apiUrl).catch(
         (err) => this.logger.error(`  [ECHOES] Backfill failed ${assetId}: ${err.message}`),
@@ -422,6 +455,300 @@ export class TrackerDiscoveryService {
     if (!createResponse.ok) throw new Error(`Echoes create key: ${createResponse.status}`);
     const newKey = (await createResponse.json()) as any;
     return newKey.token;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ENRICH EXISTING VEHICLES (fills missing VIN, plate, brand, model)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  async enrichAllVehicles(): Promise<{ updated: number; errors: string[] }> {
+    this.logger.log('[ENRICH] Starting vehicle enrichment from GPS providers...');
+    let updated = 0;
+    const errors: string[] = [];
+
+    // Load all credentials (DB + env fallback)
+    const credMap = await this.loadAllCredentials();
+
+    // Enrich Echoes vehicles
+    for (const [orgId, creds] of credMap.entries()) {
+      const echoesCred = creds.get(Provider.ECHOES);
+      if (echoesCred) {
+        try {
+          const count = await this.enrichEchoesVehicles(orgId, echoesCred.apiKey, echoesCred.accountId, echoesCred.apiUrl || 'https://api.neutral-server.com');
+          updated += count;
+        } catch (err: any) {
+          errors.push(`[ECHOES][${orgId}] ${err.message}`);
+          this.logger.error(`[ENRICH][ECHOES] Error for org ${orgId}: ${err.message}`);
+        }
+      }
+
+      // Enrich KeepTrace vehicles
+      const ktCred = creds.get(Provider.KEEPTRACE);
+      if (ktCred) {
+        try {
+          const count = await this.enrichKeepTraceVehicles(orgId, ktCred.apiKey, ktCred.apiUrl || 'https://customerapi.live.keeptrace.fr');
+          updated += count;
+        } catch (err: any) {
+          errors.push(`[KEEPTRACE][${orgId}] ${err.message}`);
+          this.logger.error(`[ENRICH][KEEPTRACE] Error for org ${orgId}: ${err.message}`);
+        }
+      }
+
+      // Enrich Ubiwan vehicles
+      const ubiwanCred = creds.get(Provider.UBIWAN);
+      if (ubiwanCred) {
+        try {
+          const count = await this.enrichUbiwanVehicles(orgId, ubiwanCred.username, ubiwanCred.password, ubiwanCred.license, ubiwanCred.serverKey, ubiwanCred.apiUrl || 'https://api-fleet.moncoyote.com');
+          updated += count;
+        } catch (err: any) {
+          errors.push(`[UBIWAN][${orgId}] ${err.message}`);
+          this.logger.error(`[ENRICH][UBIWAN] Error for org ${orgId}: ${err.message}`);
+        }
+      }
+    }
+
+    this.logger.log(`[ENRICH] Done. Updated ${updated} vehicles. Errors: ${errors.length}`);
+    return { updated, errors };
+  }
+
+  private async enrichEchoesVehicles(
+    orgId: string,
+    apiKey: string,
+    accountId: string,
+    apiUrl: string,
+  ): Promise<number> {
+    const privacyKey = await this.getEchoesPrivacyKey(apiKey, accountId, apiUrl);
+
+    // Fetch all assets from Echoes
+    const allAssets: any[] = [];
+    let offset = 0;
+    const limit = 100;
+    while (true) {
+      const response = await fetch(
+        `${apiUrl}/api/accounts/${accountId}/assets?limit=${limit}&offset=${offset}`,
+        { headers: { Authorization: `Privacykey ${privacyKey}`, Accept: 'application/json' } },
+      );
+      if (!response.ok) throw new Error(`Echoes API ${response.status}`);
+      const assets = (await response.json()) as any[];
+      if (!Array.isArray(assets) || assets.length === 0) break;
+      allAssets.push(...assets);
+      if (assets.length < limit) break;
+      offset += limit;
+    }
+
+    // Build a map of assetId -> asset data
+    const assetMap = new Map<string, any>();
+    for (const asset of allAssets) {
+      assetMap.set(String(asset.id), asset);
+    }
+
+    // Find existing Echoes vehicles for this org
+    const vehicles = await this.vehiclesRepository.find({
+      where: { organizationId: orgId },
+    });
+
+    let updated = 0;
+    for (const vehicle of vehicles) {
+      const meta = vehicle.metadata as any;
+      if (!meta?.echoesUid) continue;
+
+      const asset = assetMap.get(String(meta.echoesUid));
+      if (!asset) continue;
+
+      const registration = asset.registration || asset.licensePlate || asset.plate || '';
+      const vinRaw = asset.vin || asset.VIN || '';
+      const nameRaw = asset.name || '';
+      const isNameVin = /^[A-HJ-NPR-Z0-9]{17}$/i.test(nameRaw);
+      const vin = vinRaw || (isNameVin ? nameRaw : '');
+
+      const changes: any = {};
+      let hasChanges = false;
+
+      // Update VIN if missing
+      if (!vehicle.vin && vin) {
+        changes.vin = vin;
+        hasChanges = true;
+      }
+
+      // Update plate if it's still the default ECHOES-xxx
+      if (vehicle.plate?.startsWith('ECHOES-') && registration) {
+        changes.plate = registration;
+        hasChanges = true;
+      }
+
+      // Update name if it's a VIN (replace with more readable name)
+      if (isNameVin && registration && vehicle.name === nameRaw) {
+        changes.name = registration || `Asset ${meta.echoesUid}`;
+        hasChanges = true;
+      }
+
+      // Fill brand/model if missing
+      const brand = asset.brand || asset.make || asset.manufacturer || null;
+      const model = asset.model || null;
+      const year = asset.year || asset.modelYear || null;
+      const deviceImei = asset.imei || asset.serialNumber || asset.serial || null;
+
+      if (!vehicle.brand && brand) { changes.brand = brand; hasChanges = true; }
+      if (!vehicle.model && model) { changes.model = model; hasChanges = true; }
+      if (!(vehicle as any).year && year) { changes.year = Number(year); hasChanges = true; }
+      if (!vehicle.deviceImei && deviceImei) { changes.deviceImei = deviceImei; hasChanges = true; }
+
+      // Store raw Echoes data in metadata
+      changes.metadata = {
+        ...meta,
+        echoesRaw: {
+          name: nameRaw,
+          registration,
+          vin: vinRaw,
+          brand: asset.brand,
+          model: asset.model,
+          type: asset.type,
+          category: asset.category,
+        },
+      };
+      hasChanges = true;
+
+      if (hasChanges) {
+        await this.vehiclesRepository.update(vehicle.id, changes);
+        updated++;
+        this.logger.log(`  [ENRICH][ECHOES] Updated ${vehicle.name} (id=${meta.echoesUid}): ${JSON.stringify(Object.keys(changes))}`);
+      }
+    }
+
+    this.logger.log(`  [ENRICH][ECHOES][${orgId}] Enriched ${updated} vehicles from ${allAssets.length} assets`);
+    return updated;
+  }
+
+  private async enrichKeepTraceVehicles(orgId: string, apiKey: string, apiUrl: string): Promise<number> {
+    // Fetch vehicles from KeepTrace
+    const response = await fetch(`${apiUrl}/api/v1/vehicles`, {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+    });
+    if (!response.ok) return 0;
+    const data = (await response.json()) as any;
+    const ktVehicles = data.vehicles || data.data || data || [];
+    if (!Array.isArray(ktVehicles)) return 0;
+
+    const ktMap = new Map<string, any>();
+    for (const v of ktVehicles) {
+      const vid = String(v.id || v.vehicleId);
+      ktMap.set(vid, v);
+    }
+
+    const vehicles = await this.vehiclesRepository.find({ where: { organizationId: orgId } });
+    let updated = 0;
+
+    for (const vehicle of vehicles) {
+      const meta = vehicle.metadata as any;
+      if (!meta?.keepTraceId) continue;
+      const ktData = ktMap.get(String(meta.keepTraceId));
+      if (!ktData) continue;
+
+      const changes: any = {};
+      let hasChanges = false;
+
+      const registration = ktData.Registration || ktData.registration || ktData.LicensePlate || '';
+      const vin = ktData.VIN || ktData.vin || '';
+      const brand = ktData.Brand || ktData.brand || ktData.Make || '';
+      const model = ktData.Model || ktData.model || '';
+
+      if (!vehicle.vin && vin) { changes.vin = vin; hasChanges = true; }
+      if (vehicle.plate?.startsWith('KT-') && registration) { changes.plate = registration; hasChanges = true; }
+      if (!vehicle.brand && brand) { changes.brand = brand; hasChanges = true; }
+      if (!vehicle.model && model) { changes.model = model; hasChanges = true; }
+
+      if (hasChanges) {
+        await this.vehiclesRepository.update(vehicle.id, changes);
+        updated++;
+      }
+    }
+    return updated;
+  }
+
+  private async enrichUbiwanVehicles(
+    orgId: string,
+    username: string,
+    password: string,
+    license: string,
+    serverKey: string,
+    apiUrl: string,
+  ): Promise<number> {
+    // Authenticate with Ubiwan
+    const authResp = await fetch(`${apiUrl}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ username, password, license, serverKey }),
+    });
+    if (!authResp.ok) return 0;
+    const authData = (await authResp.json()) as any;
+    const token = authData.token || authData.accessToken || authData.data?.token;
+    if (!token) return 0;
+
+    // Fetch vehicles
+    const vResp = await fetch(`${apiUrl}/api/v1/vehicles`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+    });
+    if (!vResp.ok) return 0;
+    const vData = (await vResp.json()) as any;
+    const ubVehicles = vData.vehicles || vData.data || vData || [];
+    if (!Array.isArray(ubVehicles)) return 0;
+
+    const ubMap = new Map<string, any>();
+    for (const v of ubVehicles) {
+      const uid = String(v.uid || v.id || v.vehicleId);
+      ubMap.set(uid, v);
+    }
+
+    const vehicles = await this.vehiclesRepository.find({ where: { organizationId: orgId } });
+    let updated = 0;
+
+    for (const vehicle of vehicles) {
+      const meta = vehicle.metadata as any;
+      if (!meta?.ubiwanUid) continue;
+      const ubData = ubMap.get(String(meta.ubiwanUid));
+      if (!ubData) continue;
+
+      const changes: any = {};
+      let hasChanges = false;
+
+      const registration = ubData.registration || ubData.licensePlate || '';
+      const vin = ubData.vin || ubData.VIN || '';
+      const brand = ubData.brand || ubData.make || '';
+      const model = ubData.model || '';
+
+      if (!vehicle.vin && vin) { changes.vin = vin; hasChanges = true; }
+      if (vehicle.plate?.startsWith('UBIWAN-') && registration) { changes.plate = registration; hasChanges = true; }
+      if (!vehicle.brand && brand) { changes.brand = brand; hasChanges = true; }
+      if (!vehicle.model && model) { changes.model = model; hasChanges = true; }
+
+      if (hasChanges) {
+        await this.vehiclesRepository.update(vehicle.id, changes);
+        updated++;
+      }
+    }
+    return updated;
+  }
+
+  private async loadAllCredentials(): Promise<Map<string, Map<string, any>>> {
+    const credMap = new Map<string, Map<string, any>>();
+
+    // Load from DB
+    const dbCreds = await this.providerCredentialsRepository.find({ where: { isActive: true } });
+    for (const cred of dbCreds) {
+      if (!credMap.has(cred.organizationId)) credMap.set(cred.organizationId, new Map());
+      credMap.get(cred.organizationId)!.set(cred.provider, cred.credentials);
+    }
+
+    // Fallback to env vars for default org
+    const envCreds = this.buildEnvVarCredentials();
+    for (const ec of envCreds) {
+      if (!credMap.has(ec.organizationId)) credMap.set(ec.organizationId, new Map());
+      if (!credMap.get(ec.organizationId)!.has(ec.provider)) {
+        credMap.get(ec.organizationId)!.set(ec.provider, ec.credentials);
+      }
+    }
+
+    return credMap;
   }
 
   // ═══════════════════════════════════════════════════════════════════════

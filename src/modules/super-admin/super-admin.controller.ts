@@ -58,4 +58,15 @@ export class SuperAdminController {
     });
     return { success: true, message: 'Backfill started in background. Check server logs for progress.' };
   }
+
+  @Post('enrich-vehicles')
+  @ApiOperation({ summary: 'Enrich existing vehicles with VIN, plate, brand, model from GPS providers' })
+  @ApiResponse({ status: 200 })
+  async enrichVehicles(): Promise<any> {
+    // Fire and forget — enrichment runs in background
+    this.trackerDiscovery.enrichAllVehicles().catch((err) => {
+      console.error('Enrich error:', err);
+    });
+    return { success: true, message: 'Vehicle enrichment started in background. Check server logs for progress.' };
+  }
 }
