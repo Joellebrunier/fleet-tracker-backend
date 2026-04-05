@@ -4,6 +4,8 @@ import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { VehicleEntity } from '@modules/vehicles/entities/vehicle.entity';
+import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.entity';
+import { Provider } from '@common/enums/provider.enum';
 import { GpsDataPipelineService } from './gps-data-pipeline.service';
 
 /**
@@ -28,6 +30,8 @@ export class TrackerDiscoveryService {
   constructor(
     @InjectRepository(VehicleEntity)
     private vehiclesRepository: Repository<VehicleEntity>,
+    @InjectRepository(GpsHistoryEntity)
+    private gpsHistoryRepository: Repository<GpsHistoryEntity>,
     private configService: ConfigService,
     private pipeline: GpsDataPipelineService,
   ) {
@@ -37,6 +41,9 @@ export class TrackerDiscoveryService {
       'a040ba4f-e427-4a9c-abc4-dce3dc05d24f',
     );
   }
+
+  // How many days of history to fetch for new trackers
+  private readonly HISTORY_BACKFILL_DAYS = 30;
 
   /**
    * Run discovery every 12 hours (at 00:30 and 12:30)
@@ -106,7 +113,7 @@ export class TrackerDiscoveryService {
       const ident = device.configuration?.ident || '';
       const name = device.name || `Flespi Device ${deviceId}`;
 
-      await this.vehiclesRepository.save(
+      const vehicle = await this.vehiclesRepository.save(
         this.vehiclesRepository.create({
           organizationId: this.orgId,
           name,
@@ -118,9 +125,77 @@ export class TrackerDiscoveryService {
       );
       imported++;
       this.logger.log(`  [FLESPI] New device: ${name} (id=${deviceId}, imei=${ident})`);
+
+      // Backfill GPS history for this new device
+      this.backfillFlespiHistory(vehicle.id, deviceId, token).catch((err) =>
+        this.logger.error(`  [FLESPI] History backfill failed for ${deviceId}: ${err.message}`),
+      );
     }
 
     return imported;
+  }
+
+  /**
+   * Fetch Flespi device messages (GPS history) and store in gps_history.
+   * API: GET /gw/devices/{deviceId}/messages?data={"from":ts,"to":ts}
+   */
+  private async backfillFlespiHistory(vehicleId: string, deviceId: string, token: string): Promise<void> {
+    const now = Math.floor(Date.now() / 1000);
+    const from = now - this.HISTORY_BACKFILL_DAYS * 86400;
+
+    const response = await fetch(
+      `https://flespi.io/gw/devices/${deviceId}/messages?data={"from":${from},"to":${now}}`,
+      {
+        headers: {
+          Authorization: `FlespiToken ${token}`,
+          Accept: 'application/json',
+        },
+      },
+    );
+
+    if (!response.ok) {
+      this.logger.warn(`  [FLESPI] History API ${response.status} for device ${deviceId}`);
+      return;
+    }
+
+    const data = (await response.json()) as any;
+    const messages: any[] = data.result || [];
+
+    if (messages.length === 0) {
+      this.logger.log(`  [FLESPI] No history for device ${deviceId}`);
+      return;
+    }
+
+    const records: Partial<GpsHistoryEntity>[] = [];
+    for (const msg of messages) {
+      const lat = msg['position.latitude'] || msg.latitude;
+      const lng = msg['position.longitude'] || msg.longitude;
+      if (!lat || !lng) continue;
+
+      records.push({
+        vehicleId,
+        organizationId: this.orgId,
+        lat,
+        lng,
+        speed: msg['position.speed'] || msg.speed || 0,
+        heading: msg['position.direction'] || msg.heading || 0,
+        altitude: msg['position.altitude'] || msg.altitude,
+        provider: Provider.FLESPI,
+        createdAt: new Date((msg.timestamp || msg['server.timestamp'] || now) * 1000),
+        metadata: { source: 'backfill' },
+      });
+    }
+
+    if (records.length > 0) {
+      // Insert in batches of 500
+      for (let i = 0; i < records.length; i += 500) {
+        const batch = records.slice(i, i + 500);
+        await this.gpsHistoryRepository.save(
+          batch.map((r) => this.gpsHistoryRepository.create(r)),
+        );
+      }
+      this.logger.log(`  [FLESPI] Backfilled ${records.length} positions for device ${deviceId}`);
+    }
   }
 
   // ─── ECHOES ───────────────────────────────────────────────────────────
@@ -169,7 +244,7 @@ export class TrackerDiscoveryService {
       const name = asset.name || asset.registration || `Echoes Asset ${assetId}`;
       const plate = asset.registration || `ECHOES-${assetId}`;
 
-      await this.vehiclesRepository.save(
+      const vehicle = await this.vehiclesRepository.save(
         this.vehiclesRepository.create({
           organizationId: this.orgId,
           name,
@@ -180,9 +255,78 @@ export class TrackerDiscoveryService {
       );
       imported++;
       this.logger.log(`  [ECHOES] New asset: ${name} (id=${assetId})`);
+
+      // Backfill GPS history
+      this.backfillEchoesHistory(vehicle.id, assetId, privacyKey).catch((err) =>
+        this.logger.error(`  [ECHOES] History backfill failed for ${assetId}: ${err.message}`),
+      );
     }
 
     return imported;
+  }
+
+  /**
+   * Fetch Echoes location history and store in gps_history.
+   * API: GET /api/accounts/{id}/assets/{assetId}/locations?period={"start":ms,"end":ms}
+   */
+  private async backfillEchoesHistory(vehicleId: string, assetId: string, privacyKey: string): Promise<void> {
+    const now = Date.now();
+    const from = now - this.HISTORY_BACKFILL_DAYS * 86400 * 1000;
+
+    const period = JSON.stringify({ start: from, end: now });
+    const accountId = this.configService.get<string>('ECHOES_ACCOUNT_ID', '');
+    const apiUrl = this.configService.get<string>('ECHOES_API_URL', 'https://api.neutral-server.com');
+
+    const response = await fetch(
+      `${apiUrl}/api/accounts/${accountId}/assets/${assetId}/locations?period=${encodeURIComponent(period)}`,
+      {
+        headers: {
+          Authorization: `Privacykey ${privacyKey}`,
+          Accept: 'application/json',
+        },
+      },
+    );
+
+    if (!response.ok) {
+      this.logger.warn(`  [ECHOES] History API ${response.status} for asset ${assetId}`);
+      return;
+    }
+
+    const locations = (await response.json()) as any[];
+    if (!Array.isArray(locations) || locations.length === 0) {
+      this.logger.log(`  [ECHOES] No history for asset ${assetId}`);
+      return;
+    }
+
+    const records: Partial<GpsHistoryEntity>[] = [];
+    for (const loc of locations) {
+      const lat = loc.latitude || loc.lat;
+      const lng = loc.longitude || loc.lng || loc.lon;
+      if (!lat || !lng) continue;
+
+      records.push({
+        vehicleId,
+        organizationId: this.orgId,
+        lat,
+        lng,
+        speed: loc.speed || 0,
+        heading: loc.heading || loc.direction || 0,
+        altitude: loc.altitude,
+        provider: Provider.ECHOES,
+        createdAt: new Date(loc.timestamp || loc.date || loc.time || Date.now()),
+        metadata: { source: 'backfill' },
+      });
+    }
+
+    if (records.length > 0) {
+      for (let i = 0; i < records.length; i += 500) {
+        const batch = records.slice(i, i + 500);
+        await this.gpsHistoryRepository.save(
+          batch.map((r) => this.gpsHistoryRepository.create(r)),
+        );
+      }
+      this.logger.log(`  [ECHOES] Backfilled ${records.length} positions for asset ${assetId}`);
+    }
   }
 
   private async getEchoesPrivacyKey(apiKey: string, accountId: string): Promise<string> {
@@ -263,7 +407,7 @@ export class TrackerDiscoveryService {
       const plate = v.Registration || v.registration || v.LicensePlate || `KT-${vid}`;
       const imei = v.Imei || v.imei || '';
 
-      await this.vehiclesRepository.save(
+      const vehicle = await this.vehiclesRepository.save(
         this.vehiclesRepository.create({
           organizationId: this.orgId,
           name,
@@ -275,9 +419,109 @@ export class TrackerDiscoveryService {
       );
       imported++;
       this.logger.log(`  [KEEPTRACE] New vehicle: ${name} (id=${vid}, plate=${plate})`);
+
+      // Backfill GPS history
+      this.backfillKeepTraceHistory(vehicle.id, vid, apiUrl, apiKey).catch((err) =>
+        this.logger.error(`  [KEEPTRACE] History backfill failed for ${vid}: ${err.message}`),
+      );
     }
 
     return imported;
+  }
+
+  /**
+   * Fetch KeepTrace journey locations history and store in gps_history.
+   * API: POST api/History/GetJourneysLocations { VehicleId, StartDate, EndDate }
+   */
+  private async backfillKeepTraceHistory(
+    vehicleId: string,
+    keeptraceVehicleId: string,
+    apiUrl: string,
+    apiKey: string,
+  ): Promise<void> {
+    const now = new Date();
+    const from = new Date(now.getTime() - this.HISTORY_BACKFILL_DAYS * 86400 * 1000);
+
+    const response = await fetch(`${apiUrl}/api/History/GetJourneysLocations`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'Authorization-Key': apiKey,
+      },
+      body: JSON.stringify({
+        VehicleId: keeptraceVehicleId,
+        StartDate: from.toISOString(),
+        EndDate: now.toISOString(),
+      }),
+    });
+
+    if (!response.ok) {
+      this.logger.warn(`  [KEEPTRACE] History API ${response.status} for vehicle ${keeptraceVehicleId}`);
+      return;
+    }
+
+    const data = (await response.json()) as any;
+    // Response can be an array of journeys, each containing locations
+    const journeys = Array.isArray(data) ? data : (data.Journeys || data.journeys || []);
+
+    const records: Partial<GpsHistoryEntity>[] = [];
+
+    for (const journey of journeys) {
+      const locations = journey.Locations || journey.locations || journey.Points || journey.points || [];
+      for (const loc of locations) {
+        const lat = loc.Latitude || loc.latitude || loc.lat;
+        const lng = loc.Longitude || loc.longitude || loc.lng || loc.lon;
+        if (!lat || !lng) continue;
+
+        records.push({
+          vehicleId,
+          organizationId: this.orgId,
+          lat: parseFloat(lat),
+          lng: parseFloat(lng),
+          speed: parseFloat(loc.GpsSpeed || loc.Speed || loc.speed || 0),
+          heading: parseFloat(loc.Heading || loc.Direction || loc.heading || loc.direction || 0),
+          altitude: loc.Altitude || loc.altitude ? parseFloat(loc.Altitude || loc.altitude) : undefined,
+          provider: Provider.KEEPTRACE,
+          createdAt: new Date(loc.TimeStamp || loc.Date || loc.date || loc.timestamp || Date.now()),
+          metadata: { source: 'backfill' },
+        });
+      }
+    }
+
+    // Also handle flat array response (locations directly, not wrapped in journeys)
+    if (records.length === 0 && Array.isArray(data)) {
+      for (const loc of data) {
+        const lat = loc.Latitude || loc.latitude || loc.lat;
+        const lng = loc.Longitude || loc.longitude || loc.lng || loc.lon;
+        if (!lat || !lng) continue;
+
+        records.push({
+          vehicleId,
+          organizationId: this.orgId,
+          lat: parseFloat(lat),
+          lng: parseFloat(lng),
+          speed: parseFloat(loc.GpsSpeed || loc.Speed || loc.speed || 0),
+          heading: parseFloat(loc.Heading || loc.Direction || loc.heading || loc.direction || 0),
+          altitude: loc.Altitude || loc.altitude ? parseFloat(loc.Altitude || loc.altitude) : undefined,
+          provider: Provider.KEEPTRACE,
+          createdAt: new Date(loc.TimeStamp || loc.Date || loc.date || loc.timestamp || Date.now()),
+          metadata: { source: 'backfill' },
+        });
+      }
+    }
+
+    if (records.length > 0) {
+      for (let i = 0; i < records.length; i += 500) {
+        const batch = records.slice(i, i + 500);
+        await this.gpsHistoryRepository.save(
+          batch.map((r) => this.gpsHistoryRepository.create(r)),
+        );
+      }
+      this.logger.log(`  [KEEPTRACE] Backfilled ${records.length} positions for vehicle ${keeptraceVehicleId}`);
+    } else {
+      this.logger.log(`  [KEEPTRACE] No history for vehicle ${keeptraceVehicleId}`);
+    }
   }
 
   // ─── UBIWAN ───────────────────────────────────────────────────────────
@@ -334,7 +578,7 @@ export class TrackerDiscoveryService {
       const name = summary || `Ubiwan Device ${uid}`;
       const plate = registration || `UBIWAN-${uid}`;
 
-      await this.vehiclesRepository.save(
+      const vehicle = await this.vehiclesRepository.save(
         this.vehiclesRepository.create({
           organizationId: this.orgId,
           name,
@@ -352,9 +596,47 @@ export class TrackerDiscoveryService {
       );
       imported++;
       this.logger.log(`  [UBIWAN] New device: ${name} (uid=${uid}, plate=${plate})`);
+
+      // Ubiwan API only provides current positions (no history endpoint).
+      // Store the current position as the initial GPS history record.
+      this.seedUbiwanInitialPosition(vehicle.id, dev).catch((err) =>
+        this.logger.error(`  [UBIWAN] Initial position seed failed for ${uid}: ${err.message}`),
+      );
     }
 
     return imported;
+  }
+
+  /**
+   * Ubiwan does not expose a GPS history API — only real-time positions.
+   * We store the current position from the discovery response as the
+   * first GPS history record. Subsequent positions will be added by
+   * the polling pipeline (UbiwanAdapter).
+   */
+  private async seedUbiwanInitialPosition(vehicleId: string, device: any): Promise<void> {
+    const lat = parseFloat(device.latitude);
+    const lng = parseFloat(device.longitude);
+    if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
+      this.logger.log(`  [UBIWAN] No position data for device ${device.uid}, skipping seed`);
+      return;
+    }
+
+    await this.gpsHistoryRepository.save(
+      this.gpsHistoryRepository.create({
+        vehicleId,
+        organizationId: this.orgId,
+        lat,
+        lng,
+        speed: parseFloat(device.speed_current || 0),
+        heading: parseFloat(device.course || 0),
+        provider: Provider.UBIWAN,
+        createdAt: device.location_date
+          ? new Date(device.location_date * 1000)
+          : new Date(),
+        metadata: { source: 'discovery_seed' },
+      }),
+    );
+    this.logger.log(`  [UBIWAN] Seeded initial position for device ${device.uid}`);
   }
 
   // ─── HELPERS ──────────────────────────────────────────────────────────
