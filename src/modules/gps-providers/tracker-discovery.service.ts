@@ -1149,6 +1149,73 @@ export class TrackerDiscoveryService {
           } catch (_) {}
         }
 
+        // 6. Resolve deviceAttributes IDs
+        let deviceAttributesResolved: any = null;
+        if (assetDetail?.deviceAttributes?.length > 0) {
+          // Try /api/device_attributes or /api/accounts/{id}/device_attributes
+          const attUrls = [
+            `${apiUrl}/api/device_attributes`,
+            `${apiUrl}/api/accounts/${echoesCred.accountId}/device_attributes`,
+            `${apiUrl}/api/attributes`,
+            `${apiUrl}/api/accounts/${echoesCred.accountId}/attributes`,
+          ];
+          for (const attUrl of attUrls) {
+            try {
+              const attResp = await fetch(attUrl, { headers });
+              if (attResp.ok) {
+                const attData = await attResp.json();
+                deviceAttributesResolved = {
+                  source: attUrl,
+                  data: attData,
+                  type: typeof attData,
+                  isArray: Array.isArray(attData),
+                  count: Array.isArray(attData) ? attData.length : Object.keys(attData || {}).length,
+                  sample: Array.isArray(attData) ? attData.slice(0, 10) : attData,
+                };
+                break;
+              }
+            } catch (_) {}
+          }
+          if (!deviceAttributesResolved) deviceAttributesResolved = 'no-endpoint-found';
+        }
+
+        // 7. Try device_types endpoint to resolve deviceTypeId
+        let deviceTypes: any = null;
+        try {
+          const dtUrls = [
+            `${apiUrl}/api/device_types`,
+            `${apiUrl}/api/accounts/${echoesCred.accountId}/device_types`,
+          ];
+          for (const dtUrl of dtUrls) {
+            const dtResp = await fetch(dtUrl, { headers });
+            if (dtResp.ok) {
+              const dtData = await dtResp.json();
+              deviceTypes = { source: dtUrl, sample: Array.isArray(dtData) ? dtData.slice(0, 5) : dtData };
+              break;
+            }
+          }
+        } catch (_) {}
+
+        // 8. Try /api/accounts/{id}/assets/{id}/datas endpoint for real-time data
+        let assetDatas: any = null;
+        if (firstAsset?.id) {
+          const dataUrls = [
+            `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/datas`,
+            `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/data`,
+            `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/realtime`,
+            `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/status`,
+          ];
+          for (const dataUrl of dataUrls) {
+            try {
+              const dataResp = await fetch(dataUrl, { headers });
+              if (dataResp.ok) {
+                assetDatas = { source: dataUrl, data: await dataResp.json() };
+                break;
+              }
+            } catch (_) {}
+          }
+        }
+
         results.push({
           orgId,
           listFields: firstAsset ? Object.keys(firstAsset) : [],
@@ -1158,6 +1225,9 @@ export class TrackerDiscoveryService {
           assetExpanded: assetExpanded || 'not-available',
           lastLocation: lastLocation || 'not-available',
           tripsInfo: tripsInfo || 'not-available',
+          deviceAttributesResolved,
+          deviceTypes: deviceTypes || 'not-available',
+          assetDatas: assetDatas || 'not-available',
         });
       } catch (err: any) {
         results.push({ orgId, error: err.message });
