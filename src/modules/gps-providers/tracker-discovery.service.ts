@@ -639,6 +639,87 @@ export class TrackerDiscoveryService {
     this.logger.log(`  [UBIWAN] Seeded initial position for device ${device.uid}`);
   }
 
+  // ─── BACKFILL ALL EXISTING VEHICLES ────────────────────────────────────
+
+  /**
+   * One-time backfill: fetch GPS history for ALL existing vehicles
+   * that have provider metadata but no (or very few) history records.
+   * Called manually via super-admin endpoint.
+   */
+  async backfillAllExistingVehicles(): Promise<{ queued: number; skipped: number }> {
+    this.logger.log('=== Backfill: scanning all existing vehicles for missing GPS history ===');
+
+    const allVehicles = await this.vehiclesRepository.find({
+      where: { organizationId: this.orgId },
+    });
+
+    let queued = 0;
+    let skipped = 0;
+
+    for (const vehicle of allVehicles) {
+      const meta = (vehicle.metadata || {}) as Record<string, string>;
+
+      // Check if this vehicle already has history
+      const existingCount = await this.gpsHistoryRepository.count({
+        where: { vehicleId: vehicle.id },
+      });
+      if (existingCount > 10) {
+        skipped++;
+        continue;
+      }
+
+      // Flespi
+      if (meta.flespiChannelId) {
+        const token = this.configService.get<string>('FLESPI_TOKEN', '');
+        if (token) {
+          this.backfillFlespiHistory(vehicle.id, meta.flespiChannelId, token).catch((err) =>
+            this.logger.error(`  [BACKFILL][FLESPI] ${meta.flespiChannelId}: ${err.message}`),
+          );
+          queued++;
+          continue;
+        }
+      }
+
+      // Echoes
+      if (meta.echoesUid) {
+        const apiKey = this.configService.get<string>('ECHOES_API_KEY', '');
+        const accountId = this.configService.get<string>('ECHOES_ACCOUNT_ID', '');
+        if (apiKey && accountId) {
+          this.getEchoesPrivacyKey(apiKey, accountId)
+            .then((privacyKey) => this.backfillEchoesHistory(vehicle.id, meta.echoesUid, privacyKey))
+            .catch((err) => this.logger.error(`  [BACKFILL][ECHOES] ${meta.echoesUid}: ${err.message}`));
+          queued++;
+          continue;
+        }
+      }
+
+      // KeepTrace
+      if (meta.keeptraceId) {
+        const apiKey = this.configService.get<string>('KEEPTRACE_API_KEY', '');
+        const apiUrl = this.configService.get<string>('KEEPTRACE_API_URL', 'https://customerapi.live.keeptrace.fr');
+        if (apiKey) {
+          this.backfillKeepTraceHistory(vehicle.id, meta.keeptraceId, apiUrl, apiKey).catch((err) =>
+            this.logger.error(`  [BACKFILL][KEEPTRACE] ${meta.keeptraceId}: ${err.message}`),
+          );
+          queued++;
+          continue;
+        }
+      }
+
+      // Ubiwan — no history API, skip
+      if (meta.ubiwanId) {
+        this.logger.debug(`  [BACKFILL][UBIWAN] ${meta.ubiwanId}: no history API, skipping`);
+        skipped++;
+        continue;
+      }
+
+      skipped++;
+    }
+
+    this.logger.log(`Backfill queued: ${queued} vehicles, skipped: ${skipped}`);
+    return { queued, skipped };
+  }
+
   // ─── HELPERS ──────────────────────────────────────────────────────────
 
   /**

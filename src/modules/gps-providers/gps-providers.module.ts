@@ -37,6 +37,7 @@ import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.enti
     EchoesAdapter,
     UbiwanAdapter,
     KeepTraceAdapter,
+    TrackerDiscoveryService,
   ],
 })
 export class GpsProvidersModule {}

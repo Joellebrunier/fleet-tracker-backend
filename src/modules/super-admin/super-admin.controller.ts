@@ -1,4 +1,4 @@
-import { Controller, Get, Patch, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Body, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse } from '@nestjs/swagger';
 import { SuperAdminService } from './super-admin.service';
 import { ManageOrganizationDto } from './dto/manage-organization.dto';
@@ -7,6 +7,7 @@ import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
 import { RolesGuard } from '@common/guards/roles.guard';
 import { Roles } from '@common/decorators/roles.decorator';
 import { Role } from '@common/enums/role.enum';
+import { TrackerDiscoveryService } from '@modules/gps-providers/tracker-discovery.service';
 
 @ApiTags('super-admin')
 @Controller('super-admin')
@@ -14,7 +15,10 @@ import { Role } from '@common/enums/role.enum';
 @Roles(Role.SUPER_ADMIN)
 @ApiBearerAuth()
 export class SuperAdminController {
-  constructor(private superAdminService: SuperAdminService) {}
+  constructor(
+    private superAdminService: SuperAdminService,
+    private trackerDiscovery: TrackerDiscoveryService,
+  ) {}
 
   @Get('health')
   @ApiOperation({ summary: 'Get system health status' })
@@ -42,5 +46,13 @@ export class SuperAdminController {
   @ApiResponse({ status: 200 })
   async updateConfig(@Body() config: SystemConfigDto): Promise<any> {
     return this.superAdminService.updateSystemConfig(config);
+  }
+
+  @Post('backfill-gps-history')
+  @ApiOperation({ summary: 'Backfill GPS history for all existing vehicles with missing data' })
+  @ApiResponse({ status: 200 })
+  async backfillGpsHistory(): Promise<any> {
+    const result = await this.trackerDiscovery.backfillAllExistingVehicles();
+    return { success: true, ...result };
   }
 }
