@@ -25,7 +25,7 @@ export class OrganizationEntity {
    * Parent organization ID — null for top-level clients.
    * When set, this org is a sub-client of the parent.
    */
-  @Column({ type: 'uuid', nullable: true })
+  @Column({ name: 'parent_organization_id', type: 'uuid', nullable: true })
   @Index()
   parentOrganizationId?: string;
 
@@ -33,7 +33,7 @@ export class OrganizationEntity {
     nullable: true,
     onDelete: 'SET NULL',
   })
-  @JoinColumn({ name: 'parentOrganizationId' })
+  @JoinColumn({ name: 'parent_organization_id' })
   parentOrganization?: OrganizationEntity;
 
   @OneToMany(() => OrganizationEntity, (org) => org.parentOrganization)

@@ -31,12 +31,12 @@ export class ProviderCredentialsEntity {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'uuid' })
+  @Column({ name: 'organization_id', type: 'uuid' })
   @Index()
   organizationId: string;
 
   @ManyToOne(() => OrganizationEntity, { onDelete: 'CASCADE' })
-  @JoinColumn({ name: 'organizationId' })
+  @JoinColumn({ name: 'organization_id' })
   organization?: OrganizationEntity;
 
   @Column({ type: 'enum', enum: Provider })
@@ -54,7 +54,7 @@ export class ProviderCredentialsEntity {
   @Column({ type: 'jsonb' })
   credentials: Record<string, string>;
 
-  @Column({ type: 'boolean', default: true })
+  @Column({ name: 'is_active', type: 'boolean', default: true })
   isActive: boolean;
 
   /** Label for display (e.g. "Flespi Production", "Echoes EU") */
@@ -62,16 +62,16 @@ export class ProviderCredentialsEntity {
   label?: string;
 
   /** Last time this provider was successfully polled */
-  @Column({ type: 'timestamp', nullable: true })
+  @Column({ name: 'last_sync_at', type: 'timestamp', nullable: true })
   lastSyncAt?: Date;
 
   /** Last error message if sync failed */
-  @Column({ type: 'text', nullable: true })
+  @Column({ name: 'last_error', type: 'text', nullable: true })
   lastError?: string;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 
-  @UpdateDateColumn()
+  @UpdateDateColumn({ name: 'updated_at' })
   updatedAt: Date;
 }
