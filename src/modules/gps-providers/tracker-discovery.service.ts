@@ -1072,12 +1072,33 @@ export class TrackerDiscoveryService {
           continue;
         }
         const assets = await listResp.json();
-        // Pick an active asset (prefer one with recent data) — use asset 1133404 if available, else first
+        // Pick an active asset — try to find 1133404 across all pages, else use first active
         let firstAsset: any = null;
         if (Array.isArray(assets)) {
-          firstAsset = assets.find((a: any) => String(a.id) === '1133404')
-            || assets.find((a: any) => a.status === 'ENABLED')
-            || assets[0];
+          firstAsset = assets.find((a: any) => String(a.id) === '1133404');
+          if (!firstAsset) {
+            // Try fetching more pages to find it
+            let offset2 = 100;
+            while (!firstAsset && offset2 < 500) {
+              try {
+                const moreResp = await fetch(
+                  `${apiUrl}/api/accounts/${echoesCred.accountId}/assets?limit=100&offset=${offset2}`,
+                  { headers },
+                );
+                if (moreResp.ok) {
+                  const moreAssets = (await moreResp.json()) as any[];
+                  if (!Array.isArray(moreAssets) || moreAssets.length === 0) break;
+                  firstAsset = moreAssets.find((a: any) => String(a.id) === '1133404');
+                  if (!firstAsset && offset2 >= 200) {
+                    // Just pick any asset from the last batch
+                    firstAsset = moreAssets[moreAssets.length - 1];
+                  }
+                } else break;
+              } catch (_) { break; }
+              offset2 += 100;
+            }
+          }
+          if (!firstAsset) firstAsset = assets[assets.length - 1] || assets[0];
         }
 
         // 2. Get single asset detail (might return more fields)
