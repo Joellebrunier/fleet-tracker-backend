@@ -13,11 +13,12 @@ import { GpsGateway } from './gps.gateway';
 import { VehicleEntity } from '@modules/vehicles/entities/vehicle.entity';
 import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.entity';
 import { ProviderCredentialsEntity } from '@modules/organizations/entities/provider-credentials.entity';
+import { TripEntity } from '@modules/trips/entities/trip.entity';
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
-    TypeOrmModule.forFeature([VehicleEntity, GpsHistoryEntity, ProviderCredentialsEntity]),
+    TypeOrmModule.forFeature([VehicleEntity, GpsHistoryEntity, ProviderCredentialsEntity, TripEntity]),
   ],
   providers: [
     GpsProvidersService,

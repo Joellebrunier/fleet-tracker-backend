@@ -6,6 +6,7 @@ import { Cron } from '@nestjs/schedule';
 import { VehicleEntity } from '@modules/vehicles/entities/vehicle.entity';
 import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.entity';
 import { ProviderCredentialsEntity } from '@modules/organizations/entities/provider-credentials.entity';
+import { TripEntity } from '@modules/trips/entities/trip.entity';
 import { Provider } from '@common/enums/provider.enum';
 import { GpsDataPipelineService } from './gps-data-pipeline.service';
 
@@ -29,6 +30,8 @@ export class TrackerDiscoveryService {
     private gpsHistoryRepository: Repository<GpsHistoryEntity>,
     @InjectRepository(ProviderCredentialsEntity)
     private providerCredentialsRepository: Repository<ProviderCredentialsEntity>,
+    @InjectRepository(TripEntity)
+    private tripsRepository: Repository<TripEntity>,
     private configService: ConfigService,
     private pipeline: GpsDataPipelineService,
   ) {}
@@ -726,6 +729,172 @@ export class TrackerDiscoveryService {
       }
     }
     return updated;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SYNC TRIPS FROM ECHOES (trips + odometer + assetFeatures)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  async syncAllTrips(days: number = 7): Promise<{ synced: number; errors: string[] }> {
+    this.logger.log(`[TRIPS] Starting trip sync from GPS providers (last ${days} days)...`);
+    let synced = 0;
+    const errors: string[] = [];
+    const credMap = await this.loadAllCredentials();
+
+    for (const [orgId, creds] of credMap.entries()) {
+      const echoesCred = creds.get(Provider.ECHOES);
+      if (echoesCred) {
+        try {
+          const count = await this.syncEchoesTrips(orgId, echoesCred.apiKey, echoesCred.accountId, echoesCred.apiUrl || 'https://api.neutral-server.com', days);
+          synced += count;
+        } catch (err: any) {
+          errors.push(`[ECHOES][${orgId}] ${err.message}`);
+          this.logger.error(`[TRIPS][ECHOES] Error for org ${orgId}: ${err.message}`);
+        }
+      }
+    }
+
+    this.logger.log(`[TRIPS] Done. Synced ${synced} trips. Errors: ${errors.length}`);
+    return { synced, errors };
+  }
+
+  private async syncEchoesTrips(
+    orgId: string,
+    apiKey: string,
+    accountId: string,
+    apiUrl: string,
+    days: number,
+  ): Promise<number> {
+    const privacyKey = await this.getEchoesPrivacyKey(apiKey, accountId, apiUrl);
+    const headers = { Authorization: `Privacykey ${privacyKey}`, Accept: 'application/json' };
+
+    // Fetch all assets
+    const allAssets: any[] = [];
+    let offset = 0;
+    while (true) {
+      const resp = await fetch(
+        `${apiUrl}/api/accounts/${accountId}/assets?limit=100&offset=${offset}`,
+        { headers },
+      );
+      if (!resp.ok) break;
+      const assets = (await resp.json()) as any[];
+      if (!Array.isArray(assets) || assets.length === 0) break;
+      allAssets.push(...assets);
+      if (assets.length < 100) break;
+      offset += 100;
+    }
+
+    // Get all vehicles for this org
+    const vehicles = await this.vehiclesRepository.find({ where: { organizationId: orgId } });
+    const vehicleByEchoesUid = new Map<string, VehicleEntity>();
+    for (const v of vehicles) {
+      const uid = (v.metadata as any)?.echoesUid;
+      if (uid) vehicleByEchoesUid.set(String(uid), v);
+    }
+
+    let synced = 0;
+    const now = Date.now();
+    const from = now - days * 86400000;
+    const period = JSON.stringify({ start: from, end: now });
+
+    for (const asset of allAssets) {
+      const assetId = String(asset.id);
+      const vehicle = vehicleByEchoesUid.get(assetId);
+      if (!vehicle) continue;
+
+      // Update assetFeatures on vehicle if available (from detail endpoint)
+      try {
+        const detailResp = await fetch(
+          `${apiUrl}/api/accounts/${accountId}/assets/${assetId}`,
+          { headers },
+        );
+        if (detailResp.ok) {
+          const detail = (await detailResp.json()) as any;
+          if (detail.assetFeatures) {
+            await this.vehiclesRepository.update(vehicle.id, {
+              features: detail.assetFeatures,
+            } as any);
+          }
+        }
+      } catch (_) {}
+
+      // Fetch trips
+      try {
+        const tripsResp = await fetch(
+          `${apiUrl}/api/accounts/${accountId}/assets/${assetId}/trips?period=${encodeURIComponent(period)}`,
+          { headers },
+        );
+        if (!tripsResp.ok) continue;
+
+        const tripsData = (await tripsResp.json()) as any;
+        const trips = tripsData?.trips || [];
+        if (!Array.isArray(trips) || trips.length === 0) continue;
+
+        // Get existing trip IDs to avoid duplicates
+        const existingTrips = await this.tripsRepository.find({
+          where: { vehicleId: vehicle.id },
+          select: ['externalTripId'],
+        });
+        const existingIds = new Set(existingTrips.map(t => t.externalTripId));
+
+        for (const trip of trips) {
+          if (!trip.id || existingIds.has(trip.id)) continue;
+
+          const startLoc = trip.firstLocation?.location;
+          const endLoc = trip.lastLocation?.location;
+          if (!startLoc || !endLoc) continue;
+
+          const startDt = new Date(trip.startDateTime);
+          const endDt = new Date(trip.endDateTime);
+          const durationSec = Math.round((endDt.getTime() - startDt.getTime()) / 1000);
+          const distanceM = (trip.startMileage && trip.endMileage)
+            ? trip.endMileage - trip.startMileage
+            : null;
+
+          const tripEntity = this.tripsRepository.create({
+            vehicleId: vehicle.id,
+            organizationId: orgId,
+            provider: Provider.ECHOES,
+            externalTripId: trip.id,
+            startDateTime: startDt,
+            endDateTime: endDt,
+            startLat: startLoc.latitude,
+            startLng: startLoc.longitude,
+            endLat: endLoc.latitude,
+            endLng: endLoc.longitude,
+            startAltitude: startLoc.altitude || null,
+            endAltitude: endLoc.altitude || null,
+            startHeading: startLoc.heading || null,
+            endHeading: endLoc.heading || null,
+            startAddress: trip.firstLocation?.address || null,
+            endAddress: trip.lastLocation?.address || null,
+            startMileage: trip.startMileage || null,
+            endMileage: trip.endMileage || null,
+            distance: distanceM,
+            duration: durationSec,
+          } as any);
+
+          await this.tripsRepository.save(tripEntity);
+          synced++;
+
+          // Update vehicle odometer with latest mileage
+          if (trip.endMileage) {
+            const currentOdometer = (vehicle as any).odometer || 0;
+            if (trip.endMileage > currentOdometer) {
+              await this.vehiclesRepository.update(vehicle.id, {
+                odometer: trip.endMileage,
+              } as any);
+            }
+          }
+        }
+
+        this.logger.log(`  [TRIPS][ECHOES] ${vehicle.plate}: synced ${trips.length} trips`);
+      } catch (err: any) {
+        this.logger.error(`  [TRIPS][ECHOES] Error syncing trips for ${vehicle.plate}: ${err.message}`);
+      }
+    }
+
+    return synced;
   }
 
   private async loadAllCredentials(): Promise<Map<string, Map<string, any>>> {

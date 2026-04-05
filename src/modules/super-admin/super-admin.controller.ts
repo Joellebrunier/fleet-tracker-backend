@@ -70,6 +70,17 @@ export class SuperAdminController {
     return { success: true, message: 'Vehicle enrichment started in background. Check server logs for progress.' };
   }
 
+  @Post('sync-trips')
+  @ApiOperation({ summary: 'Sync trips from GPS providers (last N days)' })
+  @ApiResponse({ status: 200 })
+  async syncTrips(@Body() body?: { days?: number }): Promise<any> {
+    const days = body?.days || 30;
+    this.trackerDiscovery.syncAllTrips(days).catch((err) => {
+      console.error('Trip sync error:', err);
+    });
+    return { success: true, message: `Trip sync started in background for last ${days} days. Check server logs for progress.` };
+  }
+
   @Get('debug-echoes-assets')
   @ApiOperation({ summary: 'Debug: fetch raw asset data from Echoes API to inspect available fields' })
   @ApiResponse({ status: 200 })

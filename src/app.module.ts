@@ -19,6 +19,7 @@ import { VehicleGeofenceEntity } from '@modules/geofences/entities/vehicle-geofe
 import { AlertEntity } from '@modules/alerts/entities/alert.entity';
 import { AlertRuleEntity } from '@modules/alerts/entities/alert-rule.entity';
 import { ProviderCredentialsEntity } from '@modules/organizations/entities/provider-credentials.entity';
+import { TripEntity } from '@modules/trips/entities/trip.entity';
 
 import { GuardsModule } from '@common/guards/guards.module';
 import { AuthModule } from '@modules/auth/auth.module';
@@ -33,6 +34,7 @@ import { GpsProvidersModule } from '@modules/gps-providers/gps-providers.module'
 // QueueModule removed: GPS pipeline now persists directly to DB (no Redis needed)
 // import { QueueModule } from '@modules/queue/queue.module';
 import { SuperAdminModule } from '@modules/super-admin/super-admin.module';
+import { TripsModule } from '@modules/trips/trips.module';
 
 const entities = [
   UserEntity,
@@ -46,6 +48,7 @@ const entities = [
   AlertEntity,
   AlertRuleEntity,
   ProviderCredentialsEntity,
+  TripEntity,
 ];
 
 @Module({
@@ -89,6 +92,7 @@ const entities = [
     GpsProvidersModule,
     // QueueModule, // Disabled: requires Redis; GPS data pipeline uses direct DB persistence
     SuperAdminModule,
+    TripsModule,
   ],
 })
 export class AppModule {}

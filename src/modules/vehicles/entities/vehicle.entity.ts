@@ -51,11 +51,22 @@ export class VehicleEntity {
   @Column({ type: 'float', nullable: true })
   currentHeading?: number;
 
+  @Column({ type: 'float', nullable: true })
+  currentAltitude?: number;
+
   @Column({ type: 'timestamp', nullable: true })
   lastCommunication?: Date;
 
   @Column({ type: 'enum', enum: VehicleStatus, default: VehicleStatus.ACTIVE })
   status: VehicleStatus;
+
+  /** Current odometer reading in meters */
+  @Column({ type: 'int', nullable: true })
+  odometer?: number;
+
+  /** GPS provider features available for this vehicle (from Echoes assetFeatures, etc.) */
+  @Column({ type: 'jsonb', nullable: true })
+  features?: string[];
 
   @Column({ type: 'jsonb', nullable: true })
   metadata?: Record<string, any>;
