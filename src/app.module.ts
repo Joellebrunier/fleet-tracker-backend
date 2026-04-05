@@ -17,7 +17,9 @@ import { GeofenceEntity } from '@modules/geofences/entities/geofence.entity';
 import { VehicleGeofenceEntity } from '@modules/geofences/entities/vehicle-geofence.entity';
 import { AlertEntity } from '@modules/alerts/entities/alert.entity';
 import { AlertRuleEntity } from '@modules/alerts/entities/alert-rule.entity';
+import { ProviderCredentialsEntity } from '@modules/organizations/entities/provider-credentials.entity';
 
+import { GuardsModule } from '@common/guards/guards.module';
 import { AuthModule } from '@modules/auth/auth.module';
 import { UsersModule } from '@modules/users/users.module';
 import { OrganizationsModule } from '@modules/organizations/organizations.module';
@@ -41,6 +43,7 @@ const entities = [
   VehicleGeofenceEntity,
   AlertEntity,
   AlertRuleEntity,
+  ProviderCredentialsEntity,
 ];
 
 @Module({
@@ -72,6 +75,7 @@ const entities = [
         };
       },
     }),
+    GuardsModule,
     AuthModule,
     UsersModule,
     OrganizationsModule,

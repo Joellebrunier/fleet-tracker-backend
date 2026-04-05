@@ -12,11 +12,12 @@ import { TrackerDiscoveryService } from './tracker-discovery.service';
 import { GpsGateway } from './gps.gateway';
 import { VehicleEntity } from '@modules/vehicles/entities/vehicle.entity';
 import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.entity';
+import { ProviderCredentialsEntity } from '@modules/organizations/entities/provider-credentials.entity';
 
 @Module({
   imports: [
     ScheduleModule.forRoot(),
-    TypeOrmModule.forFeature([VehicleEntity, GpsHistoryEntity]),
+    TypeOrmModule.forFeature([VehicleEntity, GpsHistoryEntity, ProviderCredentialsEntity]),
   ],
   providers: [
     GpsProvidersService,

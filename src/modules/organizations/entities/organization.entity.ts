@@ -1,4 +1,14 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+  Index,
+} from 'typeorm';
 
 @Entity('organizations')
 export class OrganizationEntity {
@@ -10,6 +20,24 @@ export class OrganizationEntity {
 
   @Column({ type: 'varchar', unique: true })
   slug: string;
+
+  /**
+   * Parent organization ID — null for top-level clients.
+   * When set, this org is a sub-client of the parent.
+   */
+  @Column({ type: 'uuid', nullable: true })
+  @Index()
+  parentOrganizationId?: string;
+
+  @ManyToOne(() => OrganizationEntity, (org) => org.children, {
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
+  @JoinColumn({ name: 'parentOrganizationId' })
+  parentOrganization?: OrganizationEntity;
+
+  @OneToMany(() => OrganizationEntity, (org) => org.parentOrganization)
+  children?: OrganizationEntity[];
 
   @Column({ type: 'jsonb', nullable: true })
   settings?: Record<string, any>;

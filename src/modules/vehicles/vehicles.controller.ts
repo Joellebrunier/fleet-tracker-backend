@@ -13,6 +13,7 @@ import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse } from '@nestjs/swagg
 import { VehiclesService } from './vehicles.service';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
+import { BulkAssignVehiclesDto } from './dto/bulk-assign-vehicles.dto';
 import { VehicleEntity } from './entities/vehicle.entity';
 import { JwtAuthGuard } from '@common/guards/jwt-auth.guard';
 import { TenantGuard } from '@common/guards/tenant.guard';
@@ -98,5 +99,29 @@ export class VehiclesController {
     @Param('id') id: string,
   ): Promise<void> {
     return this.vehiclesService.remove(id, organizationId);
+  }
+
+  // ─── BULK ASSIGN ─────────────────────────────────────────────────────
+
+  @Post('bulk-assign')
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Bulk assign vehicles to a sub-client organization' })
+  @ApiResponse({ status: 200 })
+  async bulkAssign(
+    @Param('organizationId') organizationId: string,
+    @Body() dto: BulkAssignVehiclesDto,
+  ): Promise<{ assigned: number }> {
+    return this.vehiclesService.bulkAssignVehicles(organizationId, dto);
+  }
+
+  @Post('bulk-unassign')
+  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Bulk unassign vehicles back to parent organization' })
+  @ApiResponse({ status: 200 })
+  async bulkUnassign(
+    @Param('organizationId') organizationId: string,
+    @Body() body: { vehicleIds: string[] },
+  ): Promise<{ unassigned: number }> {
+    return this.vehiclesService.bulkUnassignVehicles(organizationId, body.vehicleIds);
   }
 }

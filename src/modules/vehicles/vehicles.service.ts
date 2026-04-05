@@ -5,13 +5,15 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, In } from 'typeorm';
 import { VehicleEntity } from './entities/vehicle.entity';
 import { VehicleGroupEntity } from './entities/vehicle-group.entity';
 import { CreateVehicleDto } from './dto/create-vehicle.dto';
 import { UpdateVehicleDto } from './dto/update-vehicle.dto';
+import { BulkAssignVehiclesDto } from './dto/bulk-assign-vehicles.dto';
 import { PaginationDto } from '@common/dto/pagination.dto';
 import { IPaginatedResult } from '@common/interfaces/pagination.interface';
+import { GpsHistoryEntity } from '@modules/gps-history/entities/gps-history.entity';
 
 @Injectable()
 export class VehiclesService {
@@ -20,6 +22,8 @@ export class VehiclesService {
     private vehiclesRepository: Repository<VehicleEntity>,
     @InjectRepository(VehicleGroupEntity)
     private vehicleGroupsRepository: Repository<VehicleGroupEntity>,
+    @InjectRepository(GpsHistoryEntity)
+    private gpsHistoryRepository: Repository<GpsHistoryEntity>,
   ) {}
 
   async create(createDto: CreateVehicleDto, organizationId: string): Promise<VehicleEntity> {
@@ -136,5 +140,75 @@ export class VehiclesService {
   async removeGroup(id: string, organizationId: string): Promise<void> {
     await this.findGroupById(id, organizationId);
     await this.vehicleGroupsRepository.delete(id);
+  }
+
+  // ─── BULK ASSIGN ─────────────────────────────────────────────────────
+
+  /**
+   * Bulk reassign vehicles from current org to a target sub-client org.
+   * Also moves the associated GPS history records.
+   * The caller must own the vehicles (be in their organizationId).
+   */
+  async bulkAssignVehicles(
+    callerOrgId: string,
+    dto: BulkAssignVehiclesDto,
+  ): Promise<{ assigned: number }> {
+    const { vehicleIds, targetOrganizationId } = dto;
+
+    // Verify all vehicles belong to caller's org
+    const vehicles = await this.vehiclesRepository.find({
+      where: { id: In(vehicleIds) },
+    });
+
+    const notOwned = vehicles.filter((v) => v.organizationId !== callerOrgId);
+    if (notOwned.length > 0) {
+      throw new ForbiddenException(
+        `Cannot assign vehicles that don't belong to your organization`,
+      );
+    }
+
+    const missing = vehicleIds.filter((id) => !vehicles.find((v) => v.id === id));
+    if (missing.length > 0) {
+      throw new NotFoundException(`Vehicles not found: ${missing.join(', ')}`);
+    }
+
+    // Reassign vehicles
+    await this.vehiclesRepository.update(
+      { id: In(vehicleIds) },
+      { organizationId: targetOrganizationId },
+    );
+
+    // Also reassign GPS history records for these vehicles
+    await this.gpsHistoryRepository.update(
+      { vehicleId: In(vehicleIds) },
+      { organizationId: targetOrganizationId },
+    );
+
+    return { assigned: vehicleIds.length };
+  }
+
+  /**
+   * Bulk unassign vehicles — move them back from sub-client to parent org.
+   */
+  async bulkUnassignVehicles(
+    callerOrgId: string,
+    vehicleIds: string[],
+  ): Promise<{ unassigned: number }> {
+    const vehicles = await this.vehiclesRepository.find({
+      where: { id: In(vehicleIds) },
+    });
+
+    // Reassign back to caller's org
+    await this.vehiclesRepository.update(
+      { id: In(vehicleIds) },
+      { organizationId: callerOrgId },
+    );
+
+    await this.gpsHistoryRepository.update(
+      { vehicleId: In(vehicleIds) },
+      { organizationId: callerOrgId },
+    );
+
+    return { unassigned: vehicleIds.length };
   }
 }
