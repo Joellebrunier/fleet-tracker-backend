@@ -52,7 +52,10 @@ export class SuperAdminController {
   @ApiOperation({ summary: 'Backfill GPS history for all existing vehicles with missing data' })
   @ApiResponse({ status: 200 })
   async backfillGpsHistory(): Promise<any> {
-    const result = await this.trackerDiscovery.backfillAllExistingVehicles();
-    return { success: true, ...result };
+    // Fire and forget — backfill runs in background
+    this.trackerDiscovery.backfillAllExistingVehicles().catch((err) => {
+      console.error('Backfill error:', err);
+    });
+    return { success: true, message: 'Backfill started in background. Check server logs for progress.' };
   }
 }
