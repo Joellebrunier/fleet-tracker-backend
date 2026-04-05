@@ -1060,21 +1060,104 @@ export class TrackerDiscoveryService {
       try {
         const apiUrl = echoesCred.apiUrl || 'https://api.neutral-server.com';
         const privacyKey = await this.getEchoesPrivacyKey(echoesCred.apiKey, echoesCred.accountId, apiUrl);
+        const headers = { Authorization: `Privacykey ${privacyKey}`, Accept: 'application/json' };
 
-        const response = await fetch(
-          `${apiUrl}/api/accounts/${echoesCred.accountId}/assets?limit=5&offset=0`,
-          { headers: { Authorization: `Privacykey ${privacyKey}`, Accept: 'application/json' } },
+        // 1. List assets (first 3)
+        const listResp = await fetch(
+          `${apiUrl}/api/accounts/${echoesCred.accountId}/assets?limit=3&offset=0`,
+          { headers },
         );
-        if (!response.ok) {
-          results.push({ orgId, error: `API ${response.status}` });
+        if (!listResp.ok) {
+          results.push({ orgId, error: `List API ${listResp.status}` });
           continue;
         }
-        const assets = await response.json();
+        const assets = await listResp.json();
+        const firstAsset = Array.isArray(assets) && assets.length > 0 ? assets[0] : null;
+
+        // 2. Get single asset detail (might return more fields)
+        let assetDetail: any = null;
+        if (firstAsset?.id) {
+          try {
+            const detailResp = await fetch(
+              `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}`,
+              { headers },
+            );
+            if (detailResp.ok) {
+              assetDetail = await detailResp.json();
+            } else {
+              assetDetail = { error: `Detail API ${detailResp.status}` };
+            }
+          } catch (e: any) {
+            assetDetail = { error: e.message };
+          }
+        }
+
+        // 3. Try to get asset with extra info (some APIs have ?include=all or ?expand=true)
+        let assetExpanded: any = null;
+        if (firstAsset?.id) {
+          try {
+            const expResp = await fetch(
+              `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}?include=all`,
+              { headers },
+            );
+            if (expResp.ok) {
+              assetExpanded = await expResp.json();
+            }
+          } catch (_) {}
+        }
+
+        // 4. Try last known location for the asset (may contain odometer, fuel, etc.)
+        let lastLocation: any = null;
+        if (firstAsset?.id) {
+          try {
+            const locResp = await fetch(
+              `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/lastknownlocation`,
+              { headers },
+            );
+            if (locResp.ok) {
+              lastLocation = await locResp.json();
+            } else {
+              // Try alternate endpoint
+              const locResp2 = await fetch(
+                `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/location`,
+                { headers },
+              );
+              if (locResp2.ok) lastLocation = await locResp2.json();
+            }
+          } catch (_) {}
+        }
+
+        // 5. Try trips endpoint
+        let tripsInfo: any = null;
+        if (firstAsset?.id) {
+          try {
+            const now = Date.now();
+            const yesterday = now - 86400000;
+            const period = JSON.stringify({ start: yesterday, end: now });
+            const tripsResp = await fetch(
+              `${apiUrl}/api/accounts/${echoesCred.accountId}/assets/${firstAsset.id}/trips?period=${encodeURIComponent(period)}`,
+              { headers },
+            );
+            if (tripsResp.ok) {
+              const trips = await tripsResp.json();
+              tripsInfo = {
+                count: Array.isArray(trips) ? trips.length : 'not-array',
+                sampleTrip: Array.isArray(trips) && trips.length > 0 ? trips[0] : trips,
+                tripFields: Array.isArray(trips) && trips.length > 0 ? Object.keys(trips[0]) : [],
+              };
+            }
+          } catch (_) {}
+        }
+
         results.push({
           orgId,
-          assetCount: Array.isArray(assets) ? assets.length : 'not-array',
-          sampleAssets: Array.isArray(assets) ? assets.slice(0, 3) : assets,
-          allFieldsFirstAsset: Array.isArray(assets) && assets.length > 0 ? Object.keys(assets[0]) : [],
+          listFields: firstAsset ? Object.keys(firstAsset) : [],
+          sampleFromList: firstAsset,
+          assetDetailFields: assetDetail && !assetDetail.error ? Object.keys(assetDetail) : [],
+          assetDetail,
+          assetExpanded: assetExpanded || 'not-available',
+          lastLocation: lastLocation || 'not-available',
+          tripsInfo: tripsInfo || 'not-available',
         });
       } catch (err: any) {
         results.push({ orgId, error: err.message });
