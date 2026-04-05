@@ -99,6 +99,26 @@ export class OrganizationsController {
     return this.organizationsService.findSubClients(orgId);
   }
 
+  @Get(':organizationId/tree')
+  @UseGuards(TenantGuard)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Get full hierarchy tree for this organization' })
+  async getOrganizationTree(
+    @Param('organizationId') orgId: string,
+  ): Promise<OrganizationEntity> {
+    return this.organizationsService.getOrganizationTree(orgId);
+  }
+
+  @Get(':organizationId/accessible-ids')
+  @UseGuards(TenantGuard)
+  @Roles(Role.ADMIN, Role.MANAGER, Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Get all org IDs this organization can access (recursive)' })
+  async getAccessibleOrgIds(
+    @Param('organizationId') orgId: string,
+  ): Promise<string[]> {
+    return this.organizationsService.getAccessibleOrgIds(orgId);
+  }
+
   // ─── PROVIDER CREDENTIALS ────────────────────────────────────────────
 
   @Get(':organizationId/provider-credentials')

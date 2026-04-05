@@ -112,23 +112,53 @@ export class OrganizationsService {
 
   /**
    * Get all organization IDs that a parent org can access
-   * (itself + all direct sub-clients).
+   * (itself + all descendants recursively, unlimited depth).
+   * Uses a recursive CTE for performance.
    */
   async getAccessibleOrgIds(orgId: string): Promise<string[]> {
-    const org = await this.findById(orgId);
-    const childIds = (org.children || []).map((c) => c.id);
-    return [orgId, ...childIds];
+    const result = await this.organizationsRepository.query(
+      `
+      WITH RECURSIVE org_tree AS (
+        SELECT id FROM organizations WHERE id = $1
+        UNION ALL
+        SELECT o.id FROM organizations o
+        INNER JOIN org_tree t ON o.parent_organization_id = t.id
+      )
+      SELECT id FROM org_tree
+      `,
+      [orgId],
+    );
+    return result.map((r: any) => r.id);
   }
 
   /**
-   * Check if orgA is parent of orgB (or same org).
+   * Get the full hierarchy tree for an organization (with children nested).
    */
-  async isParentOrSelf(parentOrgId: string, targetOrgId: string): Promise<boolean> {
-    if (parentOrgId === targetOrgId) return true;
-    const target = await this.organizationsRepository.findOne({
-      where: { id: targetOrgId },
+  async getOrganizationTree(orgId: string): Promise<OrganizationEntity> {
+    const org = await this.findById(orgId);
+    await this.loadChildrenRecursive(org);
+    return org;
+  }
+
+  private async loadChildrenRecursive(org: OrganizationEntity): Promise<void> {
+    const children = await this.organizationsRepository.find({
+      where: { parentOrganizationId: org.id },
+      order: { name: 'ASC' },
     });
-    return target?.parentOrganizationId === parentOrgId;
+    org.children = children;
+    for (const child of children) {
+      await this.loadChildrenRecursive(child);
+    }
+  }
+
+  /**
+   * Check if orgA is an ancestor of orgB (or same org).
+   * Works for unlimited depth.
+   */
+  async isAncestorOrSelf(ancestorOrgId: string, targetOrgId: string): Promise<boolean> {
+    if (ancestorOrgId === targetOrgId) return true;
+    const accessibleIds = await this.getAccessibleOrgIds(ancestorOrgId);
+    return accessibleIds.includes(targetOrgId);
   }
 
   // ─── PROVIDER CREDENTIALS ────────────────────────────────────────────

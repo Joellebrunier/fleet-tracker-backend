@@ -9,6 +9,7 @@ import { configValidationSchema } from '@config/validation.schema';
 
 // Explicit entity imports (required for webpack bundling)
 import { UserEntity } from '@modules/users/entities/user.entity';
+import { UserOrganizationEntity } from '@modules/users/entities/user-organization.entity';
 import { OrganizationEntity } from '@modules/organizations/entities/organization.entity';
 import { VehicleEntity } from '@modules/vehicles/entities/vehicle.entity';
 import { VehicleGroupEntity } from '@modules/vehicles/entities/vehicle-group.entity';
@@ -35,6 +36,7 @@ import { SuperAdminModule } from '@modules/super-admin/super-admin.module';
 
 const entities = [
   UserEntity,
+  UserOrganizationEntity,
   OrganizationEntity,
   VehicleEntity,
   VehicleGroupEntity,

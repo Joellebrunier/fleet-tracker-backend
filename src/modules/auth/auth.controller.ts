@@ -32,14 +32,42 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get current user info' })
-  @ApiResponse({ status: 200, type: AuthResponseDto })
   async getMe(@CurrentUser() user: UserPayload): Promise<any> {
     return {
       id: user.userId,
       email: user.email,
       role: user.role,
       organizationId: user.organizationId,
+      homeOrganizationId: user.homeOrganizationId,
     };
+  }
+
+  /**
+   * Get all organizations the current user belongs to.
+   * Used by the frontend to display the org switcher.
+   */
+  @Get('organizations')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get organizations the user belongs to' })
+  async getUserOrganizations(@CurrentUser() user: UserPayload): Promise<any> {
+    return this.authService.getUserOrganizations(user.userId);
+  }
+
+  /**
+   * Switch to a different organization.
+   * Returns a new JWT scoped to the target org.
+   */
+  @Post('switch-organization')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Switch active organization' })
+  async switchOrganization(
+    @CurrentUser() user: UserPayload,
+    @Body() body: { organizationId: string },
+  ): Promise<AuthResponseDto> {
+    return this.authService.switchOrganization(user.userId, body.organizationId);
   }
 
   @Post('logout')

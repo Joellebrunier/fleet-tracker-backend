@@ -13,7 +13,7 @@ import { GpsDataPipelineService } from './gps-data-pipeline.service';
  * TrackerDiscoveryService — Multi-Org Edition
  *
  * Scans all GPS providers every 12 hours to detect new trackers/devices.
- * Now works per-organization: each org can have its own provider credentials
+ * Works per-organization: each org has its own provider credentials
  * stored in the provider_credentials table. Falls back to env vars for
  * backward compatibility (legacy single-org mode).
  */
@@ -49,7 +49,7 @@ export class TrackerDiscoveryService {
   async discoverNewTrackers(): Promise<void> {
     this.logger.log('=== Tracker Discovery: scanning all orgs for new devices ===');
 
-    // 1. Load all active credentials from DB
+    // Load all active credentials from DB
     const allCreds = await this.providerCredentialsRepository.find({
       where: { isActive: true },
     });
@@ -62,7 +62,7 @@ export class TrackerDiscoveryService {
       credsByOrg.set(cred.organizationId, list);
     }
 
-    // 2. Also add env var fallback for the default org if no DB creds exist
+    // Add env var fallback for the default org if no DB creds exist
     if (!credsByOrg.has(this.defaultOrgId)) {
       const envCreds = this.buildEnvVarCredentials();
       if (envCreds.length > 0) {
@@ -630,7 +630,7 @@ export class TrackerDiscoveryService {
       credMap.get(cred.organizationId)!.set(cred.provider, cred.credentials);
     }
 
-    // Also add env var fallback for default org
+    // Add env var fallback for default org
     if (!credMap.has(this.defaultOrgId)) {
       credMap.set(this.defaultOrgId, new Map());
     }

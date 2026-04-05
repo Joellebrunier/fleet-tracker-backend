@@ -7,11 +7,12 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { UserEntity } from '@modules/users/entities/user.entity';
+import { UserOrganizationEntity } from '@modules/users/entities/user-organization.entity';
 import { OrganizationEntity } from '@modules/organizations/entities/organization.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([UserEntity, OrganizationEntity]),
+    TypeOrmModule.forFeature([UserEntity, UserOrganizationEntity, OrganizationEntity]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       inject: [ConfigService],

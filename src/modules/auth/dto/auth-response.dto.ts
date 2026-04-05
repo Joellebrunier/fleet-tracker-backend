@@ -20,4 +20,11 @@ export class AuthResponseDto {
     role: Role;
     organizationId: string;
   };
+
+  /** All organizations the user is a member of */
+  @ApiProperty({ required: false })
+  organizations?: Array<{
+    organizationId: string;
+    role: Role;
+  }>;
 }
