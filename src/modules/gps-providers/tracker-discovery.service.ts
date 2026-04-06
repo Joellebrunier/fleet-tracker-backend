@@ -217,28 +217,30 @@ export class TrackerDiscoveryService {
 
     const data = (await response.json()) as any;
     const devices: any[] = data.result || [];
-    const existing = await this.getExistingMetadataKeys('flespiChannelId');
+    const existingByProvider = await this.getExistingMetadataKeys('flespiChannelId');
 
     let imported = 0;
     for (const device of devices) {
       const deviceId = String(device.id);
-      if (existing.has(deviceId)) continue;
+      if (existingByProvider.has(deviceId)) continue;
 
       const ident = device.configuration?.ident || '';
       const name = device.name || `Flespi Device ${deviceId}`;
 
-      const vehicle = await this.vehiclesRepository.save(
-        this.vehiclesRepository.create({
-          organizationId: orgId,
-          name,
-          plate: ident || `FLESPI-${deviceId}`,
-          deviceImei: ident,
-          status: 'active' as any,
-          metadata: { flespiChannelId: deviceId },
-        }),
-      );
-      imported++;
-      this.logger.log(`  [FLESPI][${orgId}] New device: ${name} (id=${deviceId})`);
+      // Use findOrCreateVehicle to prevent duplicates by plate/VIN
+      const { vehicle, isNew } = await this.findOrCreateVehicle(orgId, {
+        name,
+        plate: ident || `FLESPI-${deviceId}`,
+        deviceImei: ident,
+        metadata: { flespiChannelId: deviceId },
+      });
+
+      if (isNew) {
+        imported++;
+        this.logger.log(`  [FLESPI][${orgId}] New device: ${name} (id=${deviceId})`);
+      } else {
+        this.logger.log(`  [FLESPI][${orgId}] Merged into existing: ${vehicle.plate} (id=${deviceId})`);
+      }
 
       this.backfillFlespiHistory(vehicle.id, orgId, deviceId, token).catch((err) =>
         this.logger.error(`  [FLESPI] Backfill failed ${deviceId}: ${err.message}`),
@@ -320,12 +322,12 @@ export class TrackerDiscoveryService {
       offset += limit;
     }
 
-    const existing = await this.getExistingMetadataKeys('echoesUid');
+    const existingByProvider = await this.getExistingMetadataKeys('echoesUid');
     let imported = 0;
 
     for (const asset of allAssets) {
       const assetId = String(asset.id);
-      if (existing.has(assetId)) continue;
+      if (existingByProvider.has(assetId)) continue;
 
       // Extract all available fields from Echoes asset
       const registration = asset.registration || asset.licensePlate || asset.plate || '';
@@ -346,8 +348,8 @@ export class TrackerDiscoveryService {
       const deviceImei = asset.imei || asset.serialNumber || asset.serial || null;
       const type = asset.type || asset.category || 'car';
 
-      const vehicleEntity = this.vehiclesRepository.create({
-        organizationId: orgId,
+      // Use findOrCreateVehicle to prevent duplicates by plate/VIN
+      const { vehicle, isNew } = await this.findOrCreateVehicle(orgId, {
         name,
         plate,
         vin: vin || undefined,
@@ -355,8 +357,7 @@ export class TrackerDiscoveryService {
         model: model || undefined,
         year: year ? Number(year) : undefined,
         deviceImei: deviceImei || undefined,
-        type: type as any,
-        status: 'active' as any,
+        type: type || 'car',
         metadata: {
           echoesUid: assetId,
           echoesRaw: {
@@ -369,12 +370,17 @@ export class TrackerDiscoveryService {
             category: asset.category,
           },
         },
-      } as any);
-      const vehicle = await this.vehiclesRepository.save(vehicleEntity);
-      imported++;
-      this.logger.log(`  [ECHOES][${orgId}] New asset: ${name} (id=${assetId}, plate=${plate}, vin=${vin || 'none'})`);
+      });
 
-      this.backfillEchoesHistory((vehicle as any).id, orgId, assetId, privacyKey, accountId, apiUrl).catch(
+      if (isNew) {
+        imported++;
+        this.logger.log(`  [ECHOES][${orgId}] New asset: ${name} (id=${assetId}, plate=${plate}, vin=${vin || 'none'})`);
+      } else {
+        this.logger.log(`  [ECHOES][${orgId}] Merged into existing: ${vehicle.plate} (id=${assetId})`);
+      }
+
+      // Backfill GPS history for both new and merged vehicles
+      this.backfillEchoesHistory(vehicle.id, orgId, assetId, privacyKey, accountId, apiUrl).catch(
         (err) => this.logger.error(`  [ECHOES] Backfill failed ${assetId}: ${err.message}`),
       );
     }
@@ -938,29 +944,31 @@ export class TrackerDiscoveryService {
     const vehicles = (await response.json()) as any[];
     if (!Array.isArray(vehicles)) return 0;
 
-    const existing = await this.getExistingMetadataKeys('keeptraceId');
+    const existingByProvider = await this.getExistingMetadataKeys('keeptraceId');
     let imported = 0;
 
     for (const v of vehicles) {
       const vid = String(v.VehicleId || v.Id || v.id);
-      if (existing.has(vid)) continue;
+      if (existingByProvider.has(vid)) continue;
 
       const name = v.Name || v.name || `KeepTrace ${vid}`;
       const plate = v.Registration || v.registration || v.LicensePlate || `KT-${vid}`;
       const imei = v.Imei || v.imei || '';
 
-      const vehicle = await this.vehiclesRepository.save(
-        this.vehiclesRepository.create({
-          organizationId: orgId,
-          name,
-          plate,
-          deviceImei: imei || undefined,
-          status: 'active' as any,
-          metadata: { keeptraceId: vid },
-        }),
-      );
-      imported++;
-      this.logger.log(`  [KEEPTRACE][${orgId}] New vehicle: ${name} (id=${vid})`);
+      // Use findOrCreateVehicle to prevent duplicates by plate/VIN
+      const { vehicle, isNew } = await this.findOrCreateVehicle(orgId, {
+        name,
+        plate,
+        deviceImei: imei || undefined,
+        metadata: { keeptraceId: vid },
+      });
+
+      if (isNew) {
+        imported++;
+        this.logger.log(`  [KEEPTRACE][${orgId}] New vehicle: ${name} (id=${vid})`);
+      } else {
+        this.logger.log(`  [KEEPTRACE][${orgId}] Merged into existing: ${vehicle.plate} (id=${vid})`);
+      }
 
       this.backfillKeepTraceHistory(vehicle.id, orgId, vid, apiUrl, apiKey).catch((err) =>
         this.logger.error(`  [KEEPTRACE] Backfill failed ${vid}: ${err.message}`),
@@ -1051,12 +1059,12 @@ export class TrackerDiscoveryService {
 
     const locData = (await locResponse.json()) as any;
     const devices: any[] = locData.location?.data || [];
-    const existing = await this.getExistingMetadataKeys('ubiwanId');
+    const existingByProvider = await this.getExistingMetadataKeys('ubiwanId');
 
     let imported = 0;
     for (const dev of devices) {
       const uid = String(dev.uid);
-      if (existing.has(uid)) continue;
+      if (existingByProvider.has(uid)) continue;
 
       const registration = dev.registration || '';
       const summary = dev.summary || '';
@@ -1064,20 +1072,22 @@ export class TrackerDiscoveryService {
       const name = summary || `Ubiwan Device ${uid}`;
       const plate = registration || `UBIWAN-${uid}`;
 
-      const vehicle = await this.vehiclesRepository.save(
-        this.vehiclesRepository.create({
-          organizationId: orgId,
-          name,
-          plate,
-          brand: (summary.split(' ')[0]) || undefined,
-          model: (summary.split(' ').slice(1).join(' ')) || undefined,
-          deviceImei: imei || undefined,
-          status: 'active' as any,
-          metadata: { ubiwanId: uid, ubiwanParent: String(dev.uid_parent || ''), hardware: dev.hardware || '' },
-        }),
-      );
-      imported++;
-      this.logger.log(`  [UBIWAN][${orgId}] New device: ${name} (uid=${uid})`);
+      // Use findOrCreateVehicle to prevent duplicates by plate/VIN
+      const { vehicle, isNew } = await this.findOrCreateVehicle(orgId, {
+        name,
+        plate,
+        brand: (summary.split(' ')[0]) || undefined,
+        model: (summary.split(' ').slice(1).join(' ')) || undefined,
+        deviceImei: imei || undefined,
+        metadata: { ubiwanId: uid, ubiwanParent: String(dev.uid_parent || ''), hardware: dev.hardware || '' },
+      });
+
+      if (isNew) {
+        imported++;
+        this.logger.log(`  [UBIWAN][${orgId}] New device: ${name} (uid=${uid})`);
+      } else {
+        this.logger.log(`  [UBIWAN][${orgId}] Merged into existing: ${vehicle.plate} (uid=${uid})`);
+      }
 
       this.seedUbiwanInitialPosition(vehicle.id, orgId, dev).catch((err) =>
         this.logger.error(`  [UBIWAN] Seed failed ${uid}: ${err.message}`),
@@ -1207,6 +1217,90 @@ export class TrackerDiscoveryService {
       .where(`v.metadata->>'${key}' IS NOT NULL`)
       .getRawMany();
     return new Set(results.map((r) => r.extId));
+  }
+
+  /**
+   * Find an existing vehicle by plate or VIN within the same org.
+   * If found, merge the new provider metadata into the existing vehicle.
+   * If not found, create a new vehicle.
+   * This prevents duplicates when the same physical vehicle is tracked
+   * by multiple GPS providers (e.g., Echoes AND Ubiwan).
+   */
+  private async findOrCreateVehicle(
+    orgId: string,
+    data: {
+      name: string;
+      plate: string;
+      vin?: string;
+      brand?: string;
+      model?: string;
+      year?: number;
+      type?: string;
+      deviceImei?: string;
+      status?: string;
+      metadata: Record<string, any>;
+    },
+  ): Promise<{ vehicle: VehicleEntity; isNew: boolean }> {
+    const normalizedPlate = (data.plate || '').replace(/[\s-]/g, '').toUpperCase();
+    const normalizedVin = (data.vin || '').toUpperCase();
+
+    // Skip lookup for auto-generated placeholder plates like ECHOES-123, UBIWAN-456
+    const isPlaceholderPlate = /^(ECHOES|UBIWAN|FLESPI|KT)-/.test(data.plate);
+
+    let existing: VehicleEntity | null = null;
+
+    // 1. Try to find by plate (normalized, same org) — skip placeholder plates
+    if (!isPlaceholderPlate && normalizedPlate) {
+      existing = await this.vehiclesRepository
+        .createQueryBuilder('v')
+        .where('v.organizationId = :orgId', { orgId })
+        .andWhere("UPPER(REPLACE(REPLACE(v.plate, '-', ''), ' ', '')) = :plate", { plate: normalizedPlate })
+        .getOne();
+    }
+
+    // 2. If not found by plate, try by VIN (same org)
+    if (!existing && normalizedVin && normalizedVin.length >= 10) {
+      existing = await this.vehiclesRepository
+        .createQueryBuilder('v')
+        .where('v.organizationId = :orgId', { orgId })
+        .andWhere('UPPER(v.vin) = :vin', { vin: normalizedVin })
+        .getOne();
+    }
+
+    if (existing) {
+      // Merge metadata from the new provider into the existing vehicle
+      const mergedMetadata = { ...(existing.metadata || {}), ...data.metadata };
+      existing.metadata = mergedMetadata;
+
+      // Update fields if they were empty/null on the existing record
+      if (!existing.vin && data.vin) existing.vin = data.vin;
+      if (!existing.brand && data.brand) existing.brand = data.brand;
+      if (!existing.model && data.model) existing.model = data.model;
+      if (!existing.year && data.year) existing.year = data.year;
+      if (!existing.deviceImei && data.deviceImei) existing.deviceImei = data.deviceImei;
+
+      await this.vehiclesRepository.save(existing);
+      this.logger.log(`  [DEDUP] Merged into existing vehicle ${existing.plate} (id=${existing.id})`);
+      return { vehicle: existing, isNew: false };
+    }
+
+    // 3. No match found — create new vehicle
+    const vehicleEntity = this.vehiclesRepository.create({
+      organizationId: orgId,
+      name: data.name,
+      plate: data.plate,
+      vin: data.vin || undefined,
+      brand: data.brand || undefined,
+      model: data.model || undefined,
+      year: data.year ? Number(data.year) : undefined,
+      deviceImei: data.deviceImei || undefined,
+      type: (data.type || 'car') as any,
+      status: (data.status || 'active') as any,
+      metadata: data.metadata,
+    } as any);
+    const saved = await this.vehiclesRepository.save(vehicleEntity);
+    const vehicle = Array.isArray(saved) ? saved[0] : saved;
+    return { vehicle, isNew: true };
   }
 
   private async batchInsertHistory(records: Partial<GpsHistoryEntity>[]): Promise<void> {
